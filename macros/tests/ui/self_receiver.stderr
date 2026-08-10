@@ -1,0 +1,5 @@
+error: #[tool] can only be applied to top-level functions
+ --> tests/ui/self_receiver.rs:5:10
+  |
+5 |   fn bad(&self) -> Result<String, anyhow::Error> {
+  |          ^^^^^

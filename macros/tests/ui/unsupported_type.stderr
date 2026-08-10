@@ -1,0 +1,5 @@
+error: unsupported argument type for #[tool]: Unsupported type name Vec
+ --> tests/ui/unsupported_type.rs:2:11
+  |
+2 | fn bad(x: Vec<String>) -> Result<String, anyhow::Error> {
+  |           ^^^^^^^^^^^

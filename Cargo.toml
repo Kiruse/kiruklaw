@@ -1,0 +1,14 @@
+[workspace]
+resolver = "2"
+members = [
+  "agent-loop",
+  "cli",
+  "macros",
+]
+
+[workspace.dependencies]
+anyhow = "1.0.104"
+log = "0.4.33"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1.0.151"
+thiserror = "2.0.20"

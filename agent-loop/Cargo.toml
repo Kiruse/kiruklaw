@@ -1,0 +1,16 @@
+[package]
+name = "kiruklaw-agent-loop"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+log.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+serde_json.workspace = true
+
+kiruklaw-macros = { version = "0.1.0", path = "../macros" }
+
+reqwest = { version = "0.12", default-features = true, features = ["stream", "json"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+futures-util = "0.3"
