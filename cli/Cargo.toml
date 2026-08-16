@@ -1,9 +1,22 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 [package]
 name = "kiruklaw-cli"
 version = "0.1.0"
 edition = "2024"
+license = "GPL-3.0-or-later"
+
+[[bin]]
+name = "kiruklaw"
+path = "src/main.rs"
 
 [dependencies]
-ratatui = "0.30.2"
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
 kiruklaw-agent-loop = { path = "../agent-loop" }
-kiruklaw-daemon = { path = "../daemon" }
+
+crossterm = "0.29"
+ratatui = "0.30.2"
+tokio = { version = "1", features = ["rt"] }
