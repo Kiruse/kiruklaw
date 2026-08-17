@@ -41,12 +41,32 @@ pub struct OpenAiChatCompletionRequest {
   pub messages: Vec<OpenAiMessage>,
   pub stream: bool,
   #[serde(skip_serializing_if = "Option::is_none")]
+  pub stream_options: Option<OpenAiStreamOptions>,
+  #[serde(skip_serializing_if = "Option::is_none")]
   pub tools: Option<Vec<Value>>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct OpenAiStreamOptions {
+  pub include_usage: bool,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct OpenAiUsage {
+  #[serde(default)]
+  pub prompt_tokens: u64,
+  #[serde(default)]
+  pub completion_tokens: u64,
+  #[serde(default)]
+  pub total_tokens: u64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct OpenAiChatCompletionChunk {
+  #[serde(default)]
   pub choices: Vec<OpenAiChunkChoice>,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub usage: Option<OpenAiUsage>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

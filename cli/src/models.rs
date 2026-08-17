@@ -31,7 +31,7 @@ impl ModelConfig {
 impl From<ModelConfig> for kiruklaw_agent_loop::ModelConfig {
   fn from(m: ModelConfig) -> Self {
     let api_key = m.resolve_api_key();
-    Self {
+    Self::OpenAi {
       base_url: m.base_url,
       api_key,
       model: m.model,

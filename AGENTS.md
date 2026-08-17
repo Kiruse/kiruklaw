@@ -17,11 +17,11 @@ kiruklaw/
 Core library. Sends chat completion requests to OpenAI-compatible endpoints, processes SSE streams, dispatches tool calls in a loop up to `max_steps`, and streams chunks back to the caller via `std::sync::mpsc::Sender<AgentMessageChunk>`.
 
 Modules:
-- `lib.rs` -- `run_agent_loop()` and `prompt()` entry points
-- `types.rs` -- `Conversation`, `ConversationMessage`, `AgentLoopConfig`, `AgentMessageChunk`, `FinishReason`
-- `openai.rs` -- OpenAI wire types (requests, responses, chunks)
+- `lib.rs` -- `run_agent_loop()` and `prompt()` entry points. `prompt()` returns `Result<(ConversationMessage, AgentUsage), Error>`; tracks wall-clock duration via `std::time::Instant` and parses `usage` from SSE chunks. Requests send `stream_options: { include_usage: true }`. `run_agent_loop()` accumulates `AgentUsage` across steps and includes it in `AgentLoopResponse`.
+- `types.rs` -- `Conversation`, `ConversationMessage`, `AgentLoopConfig`, `AgentMessageChunk`, `FinishReason`, `AgentUsage` (token counts + wall-clock duration, implements `Default` and `AddAssign`), `AgentLoopResponse` (contains `steps: u8` and `usage: AgentUsage`), `ModelConfig` (serde-tagged enum, `#[serde(tag = "type", rename_all = "snake_case")]`, single variant `OpenAi { base_url, api_key, model }`, manual `Default` impl returning `OpenAi` with empty strings)
+- `openai.rs` -- OpenAI wire types (requests, responses, chunks), including `OpenAiStreamOptions` (`include_usage: bool`), `OpenAiUsage` (prompt/completion/total tokens), and `OpenAiChatCompletionChunk` (optional `usage: Option<OpenAiUsage>` field)
 - `tools.rs` -- `AgentTool` trait and `AgentToolDescriptor`
-- `error.rs` -- error types
+- `error.rs` -- error types, including `Message(String)` variant for unsupported model config types
 
 ### cli (kiruklaw-cli)
 
@@ -33,7 +33,7 @@ Modules:
 - `commands.rs` -- `CommandDef`, `COMMANDS`, `CommandMatch`, `CommandResult`, `execute()` dispatch, three-tier completion matching (`is_subword_match`, `is_fuzzy_match`, `compute_completions`)
 - `ui.rs` -- ratatui frame rendering (conversation view, status bar, input box, completion popup)
 - `event.rs` -- crossterm event polling wrapper
-- `models.rs` -- config file loading and `ModelConfigFile` to `ModelConfig` conversion
+- `models.rs` -- config file loading and `ModelConfigFile` to `kiruklaw_agent_loop::ModelConfig::OpenAi { ... }` conversion
 
 ### macros (kiruklaw-macros)
 

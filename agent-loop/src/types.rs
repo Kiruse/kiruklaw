@@ -31,13 +31,42 @@ impl Default for AgentLoopConfig {
 #[derive(Debug, Clone)]
 pub struct AgentLoopResponse {
   pub steps: u8,
+  pub usage: AgentUsage,
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct ModelConfig {
-  pub base_url: String,
-  pub api_key: String,
-  pub model: String,
+pub struct AgentUsage {
+  pub input_tokens: u64,
+  pub output_tokens: u64,
+  pub total_duration_ms: u64,
+}
+
+impl std::ops::AddAssign for AgentUsage {
+  fn add_assign(&mut self, rhs: Self) {
+    self.input_tokens += rhs.input_tokens;
+    self.output_tokens += rhs.output_tokens;
+    self.total_duration_ms += rhs.total_duration_ms;
+  }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ModelConfig {
+  OpenAi {
+    base_url: String,
+    api_key: String,
+    model: String,
+  },
+}
+
+impl Default for ModelConfig {
+  fn default() -> Self {
+    Self::OpenAi {
+      base_url: String::new(),
+      api_key: String::new(),
+      model: String::new(),
+    }
+  }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -56,63 +85,14 @@ impl Conversation {
       .collect()
   }
 
-  /// Push a system prompt to this conversation.
-  pub fn push_system(&mut self, content: String) {
-    self.messages.push(ConversationMessage::System { content });
+  /// Push a new [ConversationMessage] to this conversation.
+  pub fn push(&mut self, msg: impl Into<ConversationMessage>) {
+    self.messages.push(msg.into());
   }
 
-  /// Push a user prompt to this conversation.
-  pub fn push_prompt(&mut self, content: String) {
-    self.messages.push(ConversationMessage::User { content });
-  }
-
-  /// Push an agent response to this conversation.
-  pub fn push_response(
-    &mut self,
-    content: String,
-    tool_calls: Vec<(String, String, String)>,
-    msgs_cache: &mut Vec<OpenAiMessage>,
-  ) {
-    let tool_calls: Vec<ToolCall> = tool_calls
-      .into_iter()
-      .map(|(id, name, args)| ToolCall {
-        id,
-        name,
-        arguments: args,
-      })
-      .collect();
-
-    let tool_calls_openai = if tool_calls.is_empty() {
-      None
-    } else {
-      Some(
-        tool_calls
-          .iter()
-          .map(|tc| tc.into())
-          .collect(),
-      )
-    };
-
-    self.messages.push(ConversationMessage::Assistant {
-      content: content.clone(),
-      tool_calls: tool_calls,
-    });
-
-    msgs_cache.push(OpenAiMessage {
-      role: OpenAiRole::Assistant,
-      content,
-      tool_calls: tool_calls_openai,
-      tool_call_id: None,
-    });
-  }
-
-  /// Push a tool response to this conversation.
-  pub fn push_tool_response(
-    &mut self,
-    id: String,
-    content: String,
-  ) {
-    self.messages.push(ConversationMessage::Tool { id, content });
+  /// Add the messages from the `other` conversation to this one.
+  pub fn extend(&mut self, other: Conversation) {
+    self.messages.extend(other.messages);
   }
 }
 
@@ -137,6 +117,24 @@ pub enum ConversationMessage {
 }
 
 impl ConversationMessage {
+  pub fn system(content: String) -> Self {
+    Self::System { content }
+  }
+
+  pub fn user(content: String) -> Self {
+    Self::User { content }
+  }
+
+  pub fn assistant(content: String, tool_calls: Vec<ToolCall>) -> Self {
+    Self::Assistant { content, tool_calls }
+  }
+
+  pub fn tool(id: String, content: String) -> Self {
+    Self::Tool { id, content }
+  }
+
+  /// Get the tool calls of this message, if any.
+  /// Only has an effect on [Self::Assistant] instances.
   pub fn tool_calls(&self) -> Vec<ToolCall> {
     match self {
       Self::Assistant { tool_calls, .. } => tool_calls.clone(),

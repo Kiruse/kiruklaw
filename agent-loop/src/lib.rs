@@ -3,7 +3,7 @@ pub mod openai;
 pub mod tools;
 pub mod types;
 
-use std::{collections::HashMap, sync::mpsc::Sender};
+use std::{collections::HashMap, sync::mpsc::Sender, time::Instant};
 
 use futures_util::StreamExt;
 
@@ -28,8 +28,9 @@ pub async fn run_agent_loop(
     .collect();
 
   let mut last_step = cfg.max_steps;
+  let mut total_usage = AgentUsage::default();
   for step in 0..cfg.max_steps {
-    let response = prompt(
+    let (response, usage) = prompt(
       &cfg.model,
       &cfg.tools
         .iter()
@@ -38,10 +39,11 @@ pub async fn run_agent_loop(
       msgs.clone(),
       sender.clone(),
     ).await?;
+    total_usage += usage;
 
     let tool_calls = response.tool_calls();
 
-    conversation.messages.push(response.clone());
+    conversation.push(response.clone());
     msgs.push(response.into());
 
     if tool_calls.is_empty() {
@@ -60,12 +62,15 @@ pub async fn run_agent_loop(
           info!("Agent called unknown tool {}", tc.name);
           format!("Error: Unknown tool {}", tc.name)
         });
-      conversation.push_tool_response(tc.id, response);
+      let response = ConversationMessage::tool(tc.id, response);
+      conversation.push(response.clone());
+      msgs.push(response.into());
     }
   }
 
   Ok(AgentLoopResponse {
     steps: last_step,
+    usage: total_usage,
   })
 }
 
@@ -76,13 +81,16 @@ pub async fn prompt(
   tools: &[AgentToolDescriptor],
   messages: Vec<OpenAiMessage>,
   sender: Sender<AgentMessageChunk>,
-) -> Result<ConversationMessage, Error> {
+) -> Result<(ConversationMessage, AgentUsage), Error> {
+  let ModelConfig::OpenAi { base_url, api_key, model } = llm;
+  let start = Instant::now();
   let client = reqwest::Client::new();
 
   let request = OpenAiChatCompletionRequest {
-    model: llm.model.clone(),
+    model: model.clone(),
     messages,
     stream: true,
+    stream_options: Some(OpenAiStreamOptions { include_usage: true }),
     tools: if tools.is_empty() {
       None
     } else {
@@ -90,11 +98,12 @@ pub async fn prompt(
     },
   };
 
-  let url = format!("{}/chat/completions", llm.base_url.trim_end_matches('/'));
-  let response = client
-    .post(&url)
-    .header("Authorization", format!("Bearer {}", llm.api_key))
-    .json(&request)
+  let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
+  let mut req = client.post(&url).json(&request);
+  if !api_key.is_empty() {
+    req = req.header("Authorization", format!("Bearer {}", api_key));
+  }
+  let response = req
     .send()
     .await?;
 
@@ -107,6 +116,7 @@ pub async fn prompt(
   let mut done_sent = false;
   let mut content_acc = String::new();
   let mut tool_calls_acc: Vec<ToolCall> = Vec::new();
+  let mut usage = AgentUsage::default();
 
   // stupid algorithms get written & maintained by AI
   // cus i get a headache if i try to write good code here
@@ -203,11 +213,15 @@ pub async fn prompt(
             .log_warn(None);
         }
       }
+
+      if let Some(u) = &parsed.usage {
+        usage.input_tokens = u.prompt_tokens;
+        usage.output_tokens = u.completion_tokens;
+      }
     }
   }
 
-  Ok(ConversationMessage::Assistant {
-    content: content_acc,
-    tool_calls: tool_calls_acc,
-  })
+  usage.total_duration_ms = start.elapsed().as_millis() as u64;
+
+  Ok((ConversationMessage::assistant(content_acc, tool_calls_acc), usage))
 }

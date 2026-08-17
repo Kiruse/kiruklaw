@@ -449,7 +449,7 @@ impl App {
       return;
     }
 
-    self.conversation.push_prompt(input.clone());
+    self.conversation.push(ConversationMessage::user(input.clone()));
     self.messages.push(UiMessage::User { content: input });
     self.start_agent_loop();
   }
