@@ -114,15 +114,17 @@ pub(crate) fn tool(attr: TokenStream, item: TokenStream) -> TokenStream {
         )
       }
 
-      fn handle(&self, args: String) -> String {
-        let args: #args_ident = match ::serde_json::from_str(&args) {
-          Ok(v) => v,
-          Err(e) => return format!("Error: {}", e),
-        };
-        match #fn_name(#(#call_args),*) {
-          Ok(result) => result,
-          Err(err) => format!("Error: {}", err),
-        }
+      fn handle(&mut self, args: String) -> ::std::pin::Pin<::std::boxed::Box<dyn ::std::future::Future<Output = String> + Send + '_>> {
+        ::std::boxed::Box::pin(async move {
+          let args: #args_ident = match ::serde_json::from_str(&args) {
+            Ok(v) => v,
+            Err(e) => return format!("Error: {}", e),
+          };
+          match #fn_name(#(#call_args),*) {
+            Ok(result) => result,
+            Err(err) => format!("Error: {}", err),
+          }
+        })
       }
     }
   };
@@ -130,7 +132,7 @@ pub(crate) fn tool(attr: TokenStream, item: TokenStream) -> TokenStream {
   expanded.into()
 }
 
-fn extract_doc_lines(attrs: &[Attribute]) -> Vec<String> {
+pub(crate) fn extract_doc_lines(attrs: &[Attribute]) -> Vec<String> {
   let mut lines = Vec::new();
   for attr in attrs {
     if attr.path().is_ident("doc") {
@@ -149,7 +151,7 @@ fn extract_doc_lines(attrs: &[Attribute]) -> Vec<String> {
   lines
 }
 
-fn parse_arg_descriptions(doc_lines: &[String]) -> HashMap<String, String> {
+pub(crate) fn parse_arg_descriptions(doc_lines: &[String]) -> HashMap<String, String> {
   let mut descs = HashMap::new();
   for line in doc_lines {
     let Some(rest) = line.strip_prefix('@') else {
@@ -165,14 +167,14 @@ fn parse_arg_descriptions(doc_lines: &[String]) -> HashMap<String, String> {
   descs
 }
 
-fn parse_casing_attr(attr: &TokenStream) -> Result<Casing, syn::Error> {
+pub(crate) fn parse_casing_attr(attr: &TokenStream) -> Result<Casing, syn::Error> {
   if attr.is_empty() {
     return Ok(Casing::Snake);
   }
   syn::parse(attr.clone())
 }
 
-fn get_arg_type(ty: &Type) -> Result<(proc_macro2::TokenStream, bool), String> {
+pub(crate) fn get_arg_type(ty: &Type) -> Result<(proc_macro2::TokenStream, bool), String> {
   let Type::Path(tp) = ty else {
     return Err(format!("Invalid argument type {ty:?}"));
   };
@@ -202,7 +204,7 @@ fn get_arg_type(ty: &Type) -> Result<(proc_macro2::TokenStream, bool), String> {
   ))
 }
 
-enum PrimitiveKind {
+pub(crate) enum PrimitiveKind {
   String,
   Int,
   Number,

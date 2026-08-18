@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 use std::collections::{HashMap, HashSet};
-use std::sync::mpsc;
+use tokio::sync::mpsc;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 use ratatui::prelude::*;
 
 use kiruklaw_agent_loop::{
-  run_agent_loop, AgentLoopConfig, AgentMessageChunk, Conversation, ConversationMessage,
+  AgentLoop, AgentMessageChunk, Conversation, ConversationMessage,
   FinishReason,
 };
 
@@ -113,34 +113,38 @@ impl App {
   }
 
   fn process_stream(&mut self) {
-    while let Some(rx) = &self.stream_rx {
+    let mut stream_rx = self.stream_rx.take();
+    while let Some(rx) = &mut stream_rx {
       match rx.try_recv() {
         Ok(chunk) => self.handle_chunk(chunk),
-        Err(mpsc::TryRecvError::Empty) => break,
-        Err(mpsc::TryRecvError::Disconnected) => {
-          self.stream_rx = None;
+        Err(mpsc::error::TryRecvError::Empty) => break,
+        Err(mpsc::error::TryRecvError::Disconnected) => {
+          stream_rx = None;
           break;
         }
       }
     }
+    self.stream_rx = stream_rx;
 
-    if let Some(rx) = &self.done_rx {
+    let mut done_rx = self.done_rx.take();
+    if let Some(rx) = &mut done_rx {
       match rx.try_recv() {
         Ok(conversation) => {
           self.conversation = conversation;
           self.finalize_message();
           self.stream_rx = None;
-          self.done_rx = None;
+          done_rx = None;
           self.is_generating = false;
         }
-        Err(mpsc::TryRecvError::Empty) => {}
-        Err(mpsc::TryRecvError::Disconnected) => {
+        Err(mpsc::error::TryRecvError::Empty) => {}
+        Err(mpsc::error::TryRecvError::Disconnected) => {
           self.stream_rx = None;
-          self.done_rx = None;
+          done_rx = None;
           self.is_generating = false;
         }
       }
     }
+    self.done_rx = done_rx;
   }
 
   fn handle_chunk(&mut self, chunk: AgentMessageChunk) {
@@ -475,8 +479,8 @@ impl App {
       .map(|m| m.clone().into())
       .unwrap_or_default();
 
-    let (stream_tx, stream_rx) = mpsc::channel();
-    let (done_tx, done_rx) = mpsc::channel();
+    let (stream_tx, stream_rx) = mpsc::channel(256);
+    let (done_tx, done_rx) = mpsc::channel(1);
     let mut conversation = self.conversation.clone();
 
     self.is_generating = true;
@@ -492,18 +496,12 @@ impl App {
         .build();
       match rt {
         Ok(rt) => rt.block_on(async move {
-          let cfg = AgentLoopConfig {
-            model: model_config,
-            max_steps: 20,
-            persona: None,
-            tools: vec![],
-            subagents: vec![],
-          };
-          let _ = run_agent_loop(&cfg, &mut conversation, stream_tx).await;
-          let _ = done_tx.send(conversation);
+          let mut agent_loop = AgentLoop::new(model_config);
+          let _ = agent_loop.run(&mut conversation, stream_tx).await;
+          let _ = done_tx.send(conversation).await;
         }),
         Err(_) => {
-          let _ = done_tx.send(conversation);
+          let _ = done_tx.blocking_send(conversation);
         }
       }
     });

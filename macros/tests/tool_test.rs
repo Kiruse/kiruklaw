@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 use kiruklaw_agent_loop::tools::AgentTool;
 use kiruklaw_macros::tool;
 
@@ -12,8 +13,8 @@ fn add(
   Ok(format!("{a} + {b} = {}", a + b))
 }
 
-#[test]
-fn descriptor_fields() {
+#[tokio::test]
+async fn descriptor_fields() {
   let t = Add;
   let desc = t.descriptor();
   assert_eq!(desc.name, "add");
@@ -29,16 +30,17 @@ fn descriptor_fields() {
   assert!(desc.args[1].required);
 }
 
-#[test]
-fn handle_success() {
-  let result = Add.handle(r#"{"a": 1, "b": 2}"#.to_string());
+#[tokio::test]
+async fn handle_success() {
+  let mut t = Add;
+  let result = t.handle(r#"{"a": 1, "b": 2}"#.to_string()).await;
   assert_eq!(result, "1 + 2 = 3");
 }
 
-#[test]
-fn handle_parse_error() {
-  let t = Add;
-  let result = t.handle("invalid json".to_string());
+#[tokio::test]
+async fn handle_parse_error() {
+  let mut t = Add;
+  let result = t.handle("invalid json".to_string()).await;
   assert!(result.starts_with("Error: "));
 }
 
@@ -47,10 +49,10 @@ fn always_err() -> Result<String, anyhow::Error> {
   Err(anyhow::anyhow!("something went wrong"))
 }
 
-#[test]
-fn handle_fn_error() {
-  let t = AlwaysErr;
-  let result = t.handle(r#"{}"#.to_string());
+#[tokio::test]
+async fn handle_fn_error() {
+  let mut t = AlwaysErr;
+  let result = t.handle(r#"{}"#.to_string()).await;
   assert_eq!(result, "Error: something went wrong");
 }
 
@@ -68,8 +70,8 @@ fn greet(
   }
 }
 
-#[test]
-fn optional_arg_descriptor() {
+#[tokio::test]
+async fn optional_arg_descriptor() {
   let t = Greet;
   let desc = t.descriptor();
   assert_eq!(desc.args.len(), 2);
@@ -81,13 +83,13 @@ fn optional_arg_descriptor() {
   assert!(!desc.args[1].required);
 }
 
-#[test]
-fn optional_arg_handle() {
-  let t = Greet;
-  let result = t.handle(r#"{"name": "world"}"#.to_string());
+#[tokio::test]
+async fn optional_arg_handle() {
+  let mut t = Greet;
+  let result = t.handle(r#"{"name": "world"}"#.to_string()).await;
   assert_eq!(result, "Hello, world.");
 
-  let result = t.handle(r#"{"name": "world", "excited": true}"#.to_string());
+  let result = t.handle(r#"{"name": "world", "excited": true}"#.to_string()).await;
   assert_eq!(result, "Hello, world!!!");
 }
 
@@ -96,18 +98,18 @@ fn no_args() -> Result<String, anyhow::Error> {
   Ok("pong".to_string())
 }
 
-#[test]
-fn no_args_descriptor() {
+#[tokio::test]
+async fn no_args_descriptor() {
   let t = NoArgs;
   let desc = t.descriptor();
   assert_eq!(desc.name, "no_args");
   assert!(desc.args.is_empty());
 }
 
-#[test]
-fn no_args_handle() {
-  let t = NoArgs;
-  let result = t.handle(r#"{}"#.to_string());
+#[tokio::test]
+async fn no_args_handle() {
+  let mut t = NoArgs;
+  let result = t.handle(r#"{}"#.to_string()).await;
   assert_eq!(result, "pong");
 }
 
@@ -116,8 +118,8 @@ fn no_docs(x: i64) -> Result<String, anyhow::Error> {
   Ok(format!("{}", x))
 }
 
-#[test]
-fn missing_docs() {
+#[tokio::test]
+async fn missing_docs() {
   let t = NoDocs;
   let desc = t.descriptor();
   assert_eq!(desc.name, "no_docs");
@@ -137,15 +139,15 @@ fn add_camel(
   Ok(format!("{}", first_operand + second_operand))
 }
 
-#[test]
-fn casing_camel() {
-  let t = AddCamel;
+#[tokio::test]
+async fn casing_camel() {
+  let mut t = AddCamel;
   let desc = t.descriptor();
   assert_eq!(desc.name, "addCamel");
   assert_eq!(desc.args[0].name, "firstOperand");
   assert_eq!(desc.args[1].name, "secondOperand");
   assert_eq!(
-    t.handle(r#"{"firstOperand": 1, "secondOperand": 2}"#.to_string()),
+    t.handle(r#"{"firstOperand": 1, "secondOperand": 2}"#.to_string()).await,
     "3"
   );
 }
@@ -161,15 +163,15 @@ fn add_kebab(
   Ok(format!("{}", first_operand + second_operand))
 }
 
-#[test]
-fn casing_kebab() {
-  let t = AddKebab;
+#[tokio::test]
+async fn casing_kebab() {
+  let mut t = AddKebab;
   let desc = t.descriptor();
   assert_eq!(desc.name, "add-kebab");
   assert_eq!(desc.args[0].name, "first-operand");
   assert_eq!(desc.args[1].name, "second-operand");
   assert_eq!(
-    t.handle(r#"{"first-operand": 1, "second-operand": 2}"#.to_string()),
+    t.handle(r#"{"first-operand": 1, "second-operand": 2}"#.to_string()).await,
     "3"
   );
 }
@@ -185,21 +187,21 @@ fn add_pascal(
   Ok(format!("{}", first_operand + second_operand))
 }
 
-#[test]
-fn casing_pascal() {
-  let t = AddPascal;
+#[tokio::test]
+async fn casing_pascal() {
+  let mut t = AddPascal;
   let desc = t.descriptor();
   assert_eq!(desc.name, "AddPascal");
   assert_eq!(desc.args[0].name, "FirstOperand");
   assert_eq!(desc.args[1].name, "SecondOperand");
   assert_eq!(
-    t.handle(r#"{"FirstOperand": 1, "SecondOperand": 2}"#.to_string()),
+    t.handle(r#"{"FirstOperand": 1, "SecondOperand": 2}"#.to_string()).await,
     "3"
   );
 }
 
-#[test]
-fn casing_default_is_snake() {
+#[tokio::test]
+async fn casing_default_is_snake() {
   let t = Add;
   let desc = t.descriptor();
   assert_eq!(desc.name, "add");

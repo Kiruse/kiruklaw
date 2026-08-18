@@ -11,17 +11,44 @@ pub(crate) enum Casing {
 
 impl Casing {
   pub fn recase(&self, src: &str) -> String {
-    let words: Vec<&str> = src.split('_').filter(|p| !p.is_empty()).collect();
+    let words = split_into_words(src);
     match self {
       Casing::Camel => capitalize_first(&words, false),
-      Casing::Kebab => words.join("-"),
+      Casing::Kebab => words.iter().map(|w| w.to_lowercase()).collect::<Vec<_>>().join("-"),
       Casing::Pascal => capitalize_first(&words, true),
-      Casing::Snake => words.join("_"),
+      Casing::Snake => words.iter().map(|w| w.to_lowercase()).collect::<Vec<_>>().join("_"),
     }
   }
 }
 
-fn capitalize_first(words: &[&str], all: bool) -> String {
+fn split_into_words(src: &str) -> Vec<String> {
+  let mut words = Vec::new();
+  let mut word = String::new();
+  let chars: Vec<char> = src.chars().collect();
+
+  for (i, &c) in chars.iter().enumerate() {
+    if c == '_' {
+      if !word.is_empty() {
+        words.push(std::mem::take(&mut word));
+      }
+    } else if c.is_uppercase() && !word.is_empty() {
+      let prev_lower = word.chars().last().map_or(false, |p| p.is_lowercase());
+      let next_lower = chars.get(i + 1).map_or(false, |n| n.is_lowercase());
+      if prev_lower || next_lower {
+        words.push(std::mem::take(&mut word));
+      }
+      word.push(c);
+    } else {
+      word.push(c);
+    }
+  }
+  if !word.is_empty() {
+    words.push(word);
+  }
+  words
+}
+
+fn capitalize_first(words: &[String], all: bool) -> String {
   words
     .iter()
     .enumerate()

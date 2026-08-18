@@ -7,33 +7,6 @@ use serde::Serialize;
 pub use super::openai::*;
 pub use super::tools::*;
 
-pub struct AgentLoopConfig {
-  pub max_steps: u8,
-  pub model: ModelConfig,
-  pub persona: Option<String>,
-  pub tools: Vec<Box<dyn AgentTool>>,
-  /// Subagents that this agent may invoke. PLACEHOLDER.
-  pub subagents: Vec<AgentLoopConfig>,
-}
-
-impl Default for AgentLoopConfig {
-  fn default() -> Self {
-    Self {
-      max_steps: 20,
-      model: Default::default(),
-      persona: None,
-      tools: vec![],
-      subagents: vec![],
-    }
-  }
-}
-
-#[derive(Debug, Clone)]
-pub struct AgentLoopResponse {
-  pub steps: u8,
-  pub usage: AgentUsage,
-}
-
 #[derive(Debug, Clone, Default)]
 pub struct AgentUsage {
   pub input_tokens: u64,
