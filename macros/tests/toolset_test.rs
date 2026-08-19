@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-use kiruklaw_agent_loop::tools::AgentToolSet;
+use kiruklaw_agent_loop::tools::AgentToolSetMut;
 use kiruklaw_macros::toolset;
 
 #[derive(Debug, Clone, Default)]
@@ -224,4 +224,37 @@ async fn mut_self() {
   let mut tool = Counter { count: 0 }.tools().into_iter().next().unwrap();
   assert_eq!(tool.handle(r#"{"amount": 3}"#.to_string()).await, "count is now 3");
   assert_eq!(tool.handle(r#"{"amount": 7}"#.to_string()).await, "count is now 10");
+}
+
+use kiruklaw_agent_loop::tools::AgentToolSet;
+
+#[derive(Clone, Default)]
+struct ReadOnlyTools {
+  prefix: String,
+}
+
+#[toolset(readonly)]
+impl ReadOnlyTools {
+  /// Returns the prefix.
+  async fn get_prefix(&self) -> Result<String, anyhow::Error> {
+    Ok(self.prefix.clone())
+  }
+}
+
+#[tokio::test]
+async fn readonly_toolset() {
+  let tools = ReadOnlyTools { prefix: "hello".to_string() };
+  let all = tools.tools();
+  assert_eq!(all.len(), 1);
+  let tool = all.into_iter().next().unwrap();
+  assert_eq!(tool.descriptor().name, "read_only_tools::get_prefix");
+  assert_eq!(tool.handle(r#"{}"#.to_string()).await, "hello");
+}
+
+#[tokio::test]
+async fn readonly_handle_ref() {
+  let tools = ReadOnlyTools { prefix: "world".to_string() };
+  let tool = tools.tools().into_iter().next().unwrap();
+  let result = tool.handle(r#"{}"#.to_string()).await;
+  assert_eq!(result, "world");
 }

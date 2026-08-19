@@ -7,14 +7,14 @@ use log::{info, trace, warn};
 use tokio::sync::mpsc::Sender;
 use tokio::time::Instant;
 
-use crate::{AgentMessageChunk, AgentTool, AgentToolDescriptor, AgentUsage, Conversation, ConversationMessage, FinishReason, Loggable, ModelConfig, OpenAiChatCompletionChunk, OpenAiChatCompletionRequest, OpenAiMessage, OpenAiStreamOptions, ToolCall};
+use crate::{AgentMessageChunk, AgentToolMut, AgentToolDescriptor, AgentUsage, Conversation, ConversationMessage, FinishReason, Loggable, ModelConfig, OpenAiChatCompletionChunk, OpenAiChatCompletionRequest, OpenAiMessage, OpenAiStreamOptions, ToolCall};
 use crate::error::Error;
 
 pub struct AgentLoop {
   pub max_steps: u8,
   pub model: ModelConfig,
   pub persona: Option<String>,
-  pub tools: HashMap<String, Box<dyn AgentTool>>,
+  pub tools: HashMap<String, Box<dyn AgentToolMut>>,
   /// Subagents that this agent may invoke. PLACEHOLDER.
   pub subagents: HashMap<String, AgentLoop>,
 }
@@ -41,7 +41,7 @@ impl AgentLoop {
     }
   }
 
-  pub fn with_tools(self, tools: impl Iterator<Item = Box<dyn AgentTool>>) -> Self {
+  pub fn with_tools(self, tools: impl Iterator<Item = Box<dyn AgentToolMut>>) -> Self {
     Self {
       tools: tools
         .map(|tool| (tool.descriptor().name, tool))

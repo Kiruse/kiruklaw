@@ -1,0 +1,5 @@
+error: #[toolset(readonly)] methods must take &self, not &mut self
+ --> tests/ui/readonly_mut_self.rs:6:16
+  |
+6 |   async fn bad(&mut self) -> Result<String, anyhow::Error> {
+  |                ^^^^^^^^^

@@ -1,18 +1,55 @@
 // SPDX-License-Identifier: MIT
 use crate::casing::Casing;
-use crate::tool::{extract_doc_lines, get_arg_type, parse_arg_descriptions, parse_casing_attr};
+use crate::tool::{extract_doc_lines, get_arg_type, parse_arg_descriptions};
 
 use proc_macro::TokenStream;
 use proc_macro2::Span;
 use quote::quote;
-use syn::{parse_macro_input, FnArg, Ident, ImplItem, ItemImpl, Type};
+use std::str::FromStr;
+use syn::{parse_macro_input, FnArg, Ident, ImplItem, ItemImpl, LitStr, Type};
+
+struct ToolsetAttrs {
+  readonly: bool,
+  casing: Casing,
+}
+
+impl syn::parse::Parse for ToolsetAttrs {
+  fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+    let mut readonly = false;
+    let mut casing = None;
+    while !input.is_empty() {
+      let ident: Ident = input.parse()?;
+      if ident == "readonly" {
+        readonly = true;
+      } else if ident == "casing" {
+        input.parse::<syn::Token![=]>()?;
+        let lit: LitStr = input.parse()?;
+        casing = Some(
+          Casing::from_str(&lit.value())
+            .map_err(|e| syn::Error::new(lit.span(), e))?,
+        );
+      } else {
+        return Err(syn::Error::new(ident.span(), "expected `readonly` or `casing`"));
+      }
+      if input.is_empty() {
+        break;
+      }
+      input.parse::<syn::Token![,]>()?;
+    }
+    Ok(ToolsetAttrs {
+      readonly,
+      casing: casing.unwrap_or(Casing::Snake),
+    })
+  }
+}
 
 pub(crate) fn toolset(attr: TokenStream, item: TokenStream) -> TokenStream {
   let impl_block = parse_macro_input!(item as ItemImpl);
-  let casing = match parse_casing_attr(&attr) {
-    Ok(c) => c,
+  let attrs: ToolsetAttrs = match syn::parse(attr) {
+    Ok(a) => a,
     Err(e) => return e.to_compile_error().into(),
   };
+  let casing = attrs.casing;
 
   if !impl_block.generics.params.is_empty() {
     return syn::Error::new_spanned(
@@ -49,6 +86,19 @@ pub(crate) fn toolset(attr: TokenStream, item: TokenStream) -> TokenStream {
     let has_self_receiver = matches!(method.sig.inputs.first(), Some(FnArg::Receiver(_)));
     if !has_self_receiver {
       continue;
+    }
+
+    if attrs.readonly {
+      if let Some(FnArg::Receiver(r)) = method.sig.inputs.first() {
+        if r.mutability.is_some() {
+          return syn::Error::new_spanned(
+            r,
+            "#[toolset(readonly)] methods must take &self, not &mut self",
+          )
+          .to_compile_error()
+          .into();
+        }
+      }
     }
 
     let method_name = &method.sig.ident;
@@ -131,6 +181,16 @@ pub(crate) fn toolset(attr: TokenStream, item: TokenStream) -> TokenStream {
       None => quote! {},
     };
 
+    let (_tool_trait, tool_trait_path, handle_self) = if attrs.readonly {
+      let path = quote! { ::kiruklaw_agent_loop::tools::AgentTool };
+      let self_tok = quote! { &self };
+      (quote! { AgentTool }, path, self_tok)
+    } else {
+      let path = quote! { ::kiruklaw_agent_loop::tools::AgentToolMut };
+      let self_tok = quote! { &mut self };
+      (quote! { AgentToolMut }, path, self_tok)
+    };
+
     tool_impls.push(quote! {
       #[allow(non_camel_case_types)]
       struct #wrapper_ident {
@@ -144,16 +204,16 @@ pub(crate) fn toolset(attr: TokenStream, item: TokenStream) -> TokenStream {
         #(#args_fields),*
       }
 
-      impl ::kiruklaw_agent_loop::tools::AgentTool for #wrapper_ident {
+      impl #tool_trait_path for #wrapper_ident {
         fn descriptor(&self) -> ::kiruklaw_agent_loop::tools::AgentToolDescriptor {
           ::kiruklaw_agent_loop::tools::AgentToolDescriptor::new(
             #tool_name,
-            #tool_desc,
-            vec![#(#arg_entries),*],
-          )
+          #tool_desc,
+          vec![#(#arg_entries),*],
+        )
         }
 
-        fn handle(&mut self, args: String) -> ::std::pin::Pin<::std::boxed::Box<dyn ::std::future::Future<Output = String> + Send + '_>> {
+        fn handle(#handle_self, args: String) -> ::std::pin::Pin<::std::boxed::Box<dyn ::std::future::Future<Output = String> + Send + '_>> {
           ::std::boxed::Box::pin(async move {
             let args: #args_ident = match ::serde_json::from_str(&args) {
               Ok(v) => v,
@@ -173,13 +233,24 @@ pub(crate) fn toolset(attr: TokenStream, item: TokenStream) -> TokenStream {
     });
   }
 
+  let set_trait_path = if attrs.readonly {
+    quote! { ::kiruklaw_agent_loop::tools::AgentToolSet }
+  } else {
+    quote! { ::kiruklaw_agent_loop::tools::AgentToolSetMut }
+  };
+  let set_dyn = if attrs.readonly {
+    quote! { ::kiruklaw_agent_loop::tools::AgentTool }
+  } else {
+    quote! { ::kiruklaw_agent_loop::tools::AgentToolMut }
+  };
+
   let expanded = quote! {
     #impl_block
 
     #(#tool_impls)*
 
-    impl ::kiruklaw_agent_loop::tools::AgentToolSet for #struct_ident {
-      fn tools(&self) -> Vec<Box<dyn ::kiruklaw_agent_loop::tools::AgentTool>> {
+    impl #set_trait_path for #struct_ident {
+      fn tools(&self) -> Vec<Box<dyn #set_dyn>> {
         vec![#(#tool_boxes),*]
       }
     }

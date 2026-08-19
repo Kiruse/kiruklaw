@@ -105,7 +105,7 @@ pub(crate) fn tool(attr: TokenStream, item: TokenStream) -> TokenStream {
       #(#args_fields),*
     }
 
-    impl ::kiruklaw_agent_loop::tools::AgentTool for #struct_ident {
+    impl ::kiruklaw_agent_loop::tools::AgentToolMut for #struct_ident {
       fn descriptor(&self) -> ::kiruklaw_agent_loop::tools::AgentToolDescriptor {
           ::kiruklaw_agent_loop::tools::AgentToolDescriptor::new(
             #tool_name,

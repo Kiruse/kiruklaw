@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-use kiruklaw_agent_loop::tools::AgentTool;
+use kiruklaw_agent_loop::tools::AgentToolMut;
 use kiruklaw_macros::tool;
 
 #[tool]
