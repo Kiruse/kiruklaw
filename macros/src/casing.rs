@@ -13,10 +13,36 @@ impl Casing {
   pub fn recase(&self, src: &str) -> String {
     let words = split_into_words(src);
     match self {
-      Casing::Camel => capitalize_first(&words, false),
-      Casing::Kebab => words.iter().map(|w| w.to_lowercase()).collect::<Vec<_>>().join("-"),
-      Casing::Pascal => capitalize_first(&words, true),
-      Casing::Snake => words.iter().map(|w| w.to_lowercase()).collect::<Vec<_>>().join("_"),
+      Self::Camel => capitalize_first(&words, false),
+      Self::Kebab => words
+        .iter()
+        .map(|w| w.to_lowercase())
+        .collect::<Vec<_>>()
+        .join("-"),
+      Self::Pascal => capitalize_first(&words, true),
+      Self::Snake => words
+        .iter()
+        .map(|w| w.to_lowercase())
+        .collect::<Vec<_>>()
+        .join("_"),
+    }
+  }
+
+  pub fn to_serde_rename(&self) -> Option<&'static str> {
+    match self {
+      Self::Camel => Some("camelCase"),
+      Self::Kebab => Some("kebab-case"),
+      Self::Pascal => Some("PascalCase"),
+      Self::Snake => None,
+    }
+  }
+
+  pub fn as_str(&self) -> &'static str {
+    match self {
+      Self::Camel => "camel",
+      Self::Kebab => "kebab",
+      Self::Pascal => "pascal",
+      Self::Snake => "snake",
     }
   }
 }
@@ -87,10 +113,10 @@ impl FromStr for Casing {
 
   fn from_str(s: &str) -> Result<Self, Self::Err> {
     match s {
-      "camel"  => Ok(Casing::Camel),
-      "kebab"  => Ok(Casing::Kebab),
+      "camel" => Ok(Casing::Camel),
+      "kebab" => Ok(Casing::Kebab),
       "pascal" => Ok(Casing::Pascal),
-      "snake"  => Ok(Casing::Snake),
+      "snake" => Ok(Casing::Snake),
       _ => Err(format!("Unknown casing variant {s}")),
     }
   }

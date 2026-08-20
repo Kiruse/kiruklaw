@@ -7,14 +7,14 @@ use log::{info, trace, warn};
 use tokio::sync::mpsc::Sender;
 use tokio::time::Instant;
 
-use crate::{AgentMessageChunk, AgentToolMut, AgentToolDescriptor, AgentUsage, Conversation, ConversationMessage, FinishReason, Loggable, ModelConfig, OpenAiChatCompletionChunk, OpenAiChatCompletionRequest, OpenAiMessage, OpenAiStreamOptions, ToolCall};
+use crate::{AgentMessageChunk, AgentToolDescriptor, AgentUsage, Conversation, ConversationMessage, FinishReason, Loggable, ModelConfig, OpenAiChatCompletionChunk, OpenAiChatCompletionRequest, OpenAiMessage, OpenAiStreamOptions, ToolCall, Toolset};
 use crate::error::Error;
 
 pub struct AgentLoop {
   pub max_steps: u8,
   pub model: ModelConfig,
   pub persona: Option<String>,
-  pub tools: HashMap<String, Box<dyn AgentToolMut>>,
+  pub tools: HashMap<String, Toolset>,
   /// Subagents that this agent may invoke. PLACEHOLDER.
   pub subagents: HashMap<String, AgentLoop>,
 }
@@ -41,10 +41,10 @@ impl AgentLoop {
     }
   }
 
-  pub fn with_tools(self, tools: impl Iterator<Item = Box<dyn AgentToolMut>>) -> Self {
+  pub fn with_toolsets(self, toolsets: impl Iterator<Item = Toolset>) -> Self {
     Self {
-      tools: tools
-        .map(|tool| (tool.descriptor().name, tool))
+      tools: toolsets
+        .map(|ts| (ts.name().to_string(), ts))
         .collect(),
       ..self
     }
@@ -65,8 +65,8 @@ impl AgentLoop {
     let mut msgs = conversation.as_openai_msgs();
 
     let descriptors: Vec<AgentToolDescriptor> = self.tools
-      .iter()
-      .map(|(_, tool)| tool.descriptor())
+      .values()
+      .flat_map(|ts| ts.tools())
       .collect();
 
     let mut last_step = self.max_steps;
@@ -91,9 +91,10 @@ impl AgentLoop {
       }
 
       for tc in tool_calls {
-        let response = match self.tools.get_mut(&tc.name) {
-          Some(tool) => {
-            let res = tool.handle(tc.arguments).await;
+        let ts_name = tc.name.split("::").next().unwrap_or(&tc.name);
+        let response = match self.tools.get_mut(ts_name) {
+          Some(ts) => {
+            let res = ts.handle(&tc.name, tc.arguments).await;
             trace!("Agent called tool {} with result: {}", tc.name, res);
             res
           }
@@ -102,6 +103,7 @@ impl AgentLoop {
             format!("Error: Unknown tool {}", tc.name)
           }
         };
+
         let response = ConversationMessage::tool(tc.id, response);
         conversation.push(response.clone());
         msgs.push(response.into());

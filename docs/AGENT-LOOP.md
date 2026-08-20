@@ -16,7 +16,7 @@ pub async fn run(
 
 Runs the full multi-step loop on the `AgentLoop` struct. On each step, calls `prompt()` to get an LLM response. If the response contains tool calls, dispatches them (looked up by name from `self.tools`) and pushes the results into the conversation before the next step. If no tool calls, the loop terminates. Streams all chunks (content, reasoning, tool call fragments, done) to the caller via the `sender` channel. Accumulates `AgentUsage` across steps and includes it in the returned `AgentLoopResponse`.
 
-Tools are stored as `HashMap<String, Box<dyn AgentToolMut>>` and can be set via `AgentLoop::with_tools()` which accepts `impl Iterator<Item = Box<dyn AgentToolMut>>`.
+Toolsets are stored as `HashMap<String, Toolset>` keyed by toolset name and can be set via `AgentLoop::with_toolsets()` which accepts `impl Iterator<Item = Toolset>`. Descriptors are collected via `ts.tools()` from each toolset. Tool calls are dispatched by splitting `tc.name` on `::` to find the target toolset, then calling `ts.handle(&tc.name, tc.arguments)`.
 
 ### `prompt`
 
@@ -40,7 +40,7 @@ pub struct AgentLoop {
     pub max_steps: u8,
     pub model: ModelConfig,
     pub persona: Option<String>,
-    pub tools: HashMap<String, Box<dyn AgentToolMut>>,
+    pub tools: HashMap<String, Toolset>,
 }
 ```
 
@@ -98,24 +98,30 @@ pub struct AgentLoopResponse {
 
 Number of steps actually taken (the index of the final step, not a count), together with accumulated usage across all steps.
 
-## Tool traits
+## Toolset traits
 
-Two tool traits are defined in `tools.rs`:
+Two toolset traits are defined in `tools.rs`:
 
-- **`AgentTool`** -- readonly trait with `handle(&self, args: serde_json::Value, ...)`. Used when tools do not need to mutate internal state.
-- **`AgentToolMut`** -- mutable trait with `handle(&mut self, args: serde_json::Value, ...)`. Used when tools need to mutate internal state.
+- **`AgentToolset`** -- readonly trait (`Send + Sync`). Methods: `name(&self) -> &'static str`, `tools(&self) -> Vec<AgentToolDescriptor>`, `handle(&self, tool_name: &str, args: String) -> Pin<Box<dyn Future<Output = String> + Send + '_>>`.
+- **`AgentToolsetMut`** -- mutable trait. Same signatures as `AgentToolset` but `handle` takes `&mut self`.
 
-Collection traits:
+The **`Toolset`** enum unifies both:
 
-- **`AgentToolSet`** -- returns `Vec<Box<dyn AgentTool>>`.
-- **`AgentToolSetMut`** -- returns `Vec<Box<dyn AgentToolMut>>`.
+```rust
+pub enum Toolset {
+    Immutable(Box<dyn AgentToolset>),
+    Mutable(Box<dyn AgentToolsetMut>),
+}
+```
 
-The `AgentLoop` stores tools as `HashMap<String, Box<dyn AgentToolMut>>` and dispatches via the `AgentToolMut` trait.
+Exposes unified `name()`, `tools()`, and `handle(&mut self, ...)` methods.
+
+The `AgentLoop` stores toolsets as `HashMap<String, Toolset>` keyed by toolset name and dispatches via the `Toolset` enum's unified interface.
 
 ## Tool dispatch
 
-Tool calls in the LLM response are looked up by name in the `tools` HashMap. If a tool is found, `tool.handle(arguments)` is called and the result is pushed as a `Tool` message. If not found, an error string is returned. Tool calls are executed sequentially within a step.
+Tool calls in the LLM response are dispatched by splitting `tc.name` on `::` to locate the target toolset in the `tools` HashMap (the part before `::` is the toolset name). If the toolset is found, `toolset.handle(&tc.name, tc.arguments)` is called and the result is pushed as a `Tool` message. If not found, an error string is returned. Tool calls are executed sequentially within a step.
 
 ## Wire protocol
 
-The library speaks the OpenAI chat completion API. The request POSTs to `{base_url}/chat/completions` with JSON body containing `model`, `messages`, `stream: true`, `stream_options: { include_usage: true }`, and optionally `tools` (omitted when the tools map is empty). The response is an SSE stream of `data: {...}` lines terminated by `data: [DONE]`.
+The library speaks the OpenAI chat completion API. The request POSTs to `{base_url}/chat/completions` with JSON body containing `model`, `messages`, `stream: true`, `stream_options: { include_usage: true }`, and optionally `tools` (omitted when the toolsets map is empty). The response is an SSE stream of `data: {...}` lines terminated by `data: [DONE]`.

@@ -2,22 +2,52 @@ use std::{fmt::Debug, future::Future, pin::Pin};
 
 use serde_json::{Map, Value, json};
 
-pub trait AgentTool: Send + Sync {
-  fn descriptor(&self) -> AgentToolDescriptor;
-  fn handle(&self, args: String) -> Pin<Box<dyn Future<Output = String> + Send + '_>>;
+pub trait AgentToolset: Send + Sync {
+  /// Get this toolset's name.
+  fn name(&self) -> &'static str;
+  /// Get a collection of this toolset's tools' descriptors. These
+  /// descriptors will include the toolset's name as namespace.
+  fn tools(&self) -> Vec<AgentToolDescriptor>;
+  /// Execute the given named tool, without toolset namespace.
+  fn handle(&self, tool_name: &str, args: String) -> Pin<Box<dyn Future<Output = String> + Send + '_>>;
 }
 
-pub trait AgentToolMut: Send + Sync {
-  fn descriptor(&self) -> AgentToolDescriptor;
-  fn handle(&mut self, args: String) -> Pin<Box<dyn Future<Output = String> + Send + '_>>;
+pub trait AgentToolsetMut: Send + Sync {
+  /// Get this toolset's name.
+  fn name(&self) -> &'static str;
+  /// Get a collection of this toolset's tools' descriptors. These
+  /// descriptors will include the toolset's name as namespace.
+  fn tools(&self) -> Vec<AgentToolDescriptor>;
+  /// Execute the given named tool, without toolset namespace.
+  fn handle(&mut self, tool_name: &str, args: String) -> Pin<Box<dyn Future<Output = String> + Send + '_>>;
 }
 
-pub trait AgentToolSet {
-  fn tools(&self) -> Vec<Box<dyn AgentTool>>;
+pub enum Toolset {
+  Immutable(Box<dyn AgentToolset>),
+  Mutable(Box<dyn AgentToolsetMut>),
 }
 
-pub trait AgentToolSetMut {
-  fn tools(&self) -> Vec<Box<dyn AgentToolMut>>;
+impl Toolset {
+  pub fn name(&self) -> &'static str {
+    match self {
+      Self::Immutable(t) => t.name(),
+      Self::Mutable(t) => t.name(),
+    }
+  }
+
+  pub fn tools(&self) -> Vec<AgentToolDescriptor> {
+    match self {
+      Self::Immutable(t) => t.tools(),
+      Self::Mutable(t) => t.tools(),
+    }
+  }
+
+  pub fn handle(&mut self, tool_name: &str, args: String) -> Pin<Box<dyn Future<Output = String> + Send + '_>> {
+    match self {
+      Self::Immutable(t) => t.handle(tool_name, args),
+      Self::Mutable(t) => t.handle(tool_name, args),
+    }
+  }
 }
 
 #[derive(Debug, Clone)]

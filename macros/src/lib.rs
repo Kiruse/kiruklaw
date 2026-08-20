@@ -4,6 +4,7 @@ use proc_macro::TokenStream;
 
 mod casing;
 mod tool;
+mod toolargs;
 mod toolset;
 
 /// `#[tool]` is applicable to top-level functions only. It produces
@@ -61,4 +62,9 @@ pub fn tool(attr: TokenStream, item: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn toolset(attr: TokenStream, item: TokenStream) -> TokenStream {
   toolset::toolset(attr, item)
+}
+
+#[proc_macro_derive(AgentToolArgs, attributes(toolarg, toolargs))]
+pub fn derive_agent_tool_args(input: TokenStream) -> TokenStream {
+  toolargs::derive_agent_tool_args(input)
 }

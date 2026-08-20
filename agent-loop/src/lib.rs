@@ -4,7 +4,7 @@ pub mod openai;
 pub mod tools;
 pub mod types;
 
-pub use kiruklaw_macros::{tool, toolset};
+pub use kiruklaw_macros::{self as macros, tool, toolset};
 
 pub use error::Error as AgentLoopError;
 pub use types::*;
