@@ -1,5 +1,16 @@
-error: unsupported argument type for #[tool]: Unsupported type name Vec
- --> tests/ui/unsupported_type.rs:2:11
+error: unsupported type for AgentToolArgs: Unsupported type name Vec
+ --> tests/ui/unsupported_type.rs:2:17
   |
-2 | fn bad(x: Vec<String>) -> Result<String, anyhow::Error> {
-  |           ^^^^^^^^^^^
+2 | async fn bad(x: Vec<String>) -> Result<String, anyhow::Error> {
+  |                 ^^^^^^^^^^^
+
+error[E0599]: no function or associated item named `tool_args` found for struct `BadBadArgs` in the current scope
+ --> tests/ui/unsupported_type.rs:1:1
+  |
+1 | #[kiruklaw_macros::tool]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^
+  | |
+  | function or associated item not found in `BadBadArgs`
+  | function or associated item `tool_args` not found for this struct
+  |
+  = note: this error originates in the attribute macro `::kiruklaw_agent_loop::macros::toolset` (in Nightly builds, run with -Z macro-backtrace for more info)

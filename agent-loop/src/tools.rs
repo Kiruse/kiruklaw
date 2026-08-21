@@ -2,32 +2,32 @@ use std::{fmt::Debug, future::Future, pin::Pin};
 
 use serde_json::{Map, Value, json};
 
-pub trait AgentToolset: Send + Sync {
+pub trait AgentToolset<C = ()>: Send + Sync {
   /// Get this toolset's name.
   fn name(&self) -> &'static str;
   /// Get a collection of this toolset's tools' descriptors. These
   /// descriptors will include the toolset's name as namespace.
   fn tools(&self) -> Vec<AgentToolDescriptor>;
   /// Execute the given named tool, without toolset namespace.
-  fn handle(&self, tool_name: &str, args: String) -> Pin<Box<dyn Future<Output = String> + Send + '_>>;
+  fn handle<'a>(&'a self, ctx: &'a C, tool_name: &str, args: String) -> Pin<Box<dyn Future<Output = String> + Send + 'a>>;
 }
 
-pub trait AgentToolsetMut: Send + Sync {
+pub trait AgentToolsetMut<C = ()>: Send + Sync {
   /// Get this toolset's name.
   fn name(&self) -> &'static str;
   /// Get a collection of this toolset's tools' descriptors. These
   /// descriptors will include the toolset's name as namespace.
   fn tools(&self) -> Vec<AgentToolDescriptor>;
   /// Execute the given named tool, without toolset namespace.
-  fn handle(&mut self, tool_name: &str, args: String) -> Pin<Box<dyn Future<Output = String> + Send + '_>>;
+  fn handle<'a>(&'a mut self, ctx: &'a C, tool_name: &str, args: String) -> Pin<Box<dyn Future<Output = String> + Send + 'a>>;
 }
 
-pub enum Toolset {
-  Immutable(Box<dyn AgentToolset>),
-  Mutable(Box<dyn AgentToolsetMut>),
+pub enum Toolset<C = ()> {
+  Immutable(Box<dyn AgentToolset<C>>),
+  Mutable(Box<dyn AgentToolsetMut<C>>),
 }
 
-impl Toolset {
+impl<C> Toolset<C> {
   pub fn name(&self) -> &'static str {
     match self {
       Self::Immutable(t) => t.name(),
@@ -42,10 +42,10 @@ impl Toolset {
     }
   }
 
-  pub fn handle(&mut self, tool_name: &str, args: String) -> Pin<Box<dyn Future<Output = String> + Send + '_>> {
+  pub fn handle<'a>(&'a mut self, ctx: &'a C, tool_name: &str, args: String) -> Pin<Box<dyn Future<Output = String> + Send + 'a>> {
     match self {
-      Self::Immutable(t) => t.handle(tool_name, args),
-      Self::Mutable(t) => t.handle(tool_name, args),
+      Self::Immutable(t) => t.handle(ctx, tool_name, args),
+      Self::Mutable(t) => t.handle(ctx, tool_name, args),
     }
   }
 }

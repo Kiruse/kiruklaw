@@ -10,16 +10,16 @@ use tokio::time::Instant;
 use crate::{AgentMessageChunk, AgentToolDescriptor, AgentUsage, Conversation, ConversationMessage, FinishReason, Loggable, ModelConfig, OpenAiChatCompletionChunk, OpenAiChatCompletionRequest, OpenAiMessage, OpenAiStreamOptions, ToolCall, Toolset};
 use crate::error::Error;
 
-pub struct AgentLoop {
+pub struct AgentLoop<C = ()> {
   pub max_steps: u8,
   pub model: ModelConfig,
   pub persona: Option<String>,
-  pub tools: HashMap<String, Toolset>,
+  pub tools: HashMap<String, Toolset<C>>,
   /// Subagents that this agent may invoke. PLACEHOLDER.
   pub subagents: HashMap<String, AgentLoop>,
 }
 
-impl AgentLoop {
+impl<C> AgentLoop<C> {
   pub fn new(model: ModelConfig) -> Self {
     Self {
       model,
@@ -41,7 +41,7 @@ impl AgentLoop {
     }
   }
 
-  pub fn with_toolsets(self, toolsets: impl Iterator<Item = Toolset>) -> Self {
+  pub fn with_toolsets(self, toolsets: impl Iterator<Item = Toolset<C>>) -> Self {
     Self {
       tools: toolsets
         .map(|ts| (ts.name().to_string(), ts))
@@ -59,6 +59,7 @@ impl AgentLoop {
 
   pub async fn run(
     &mut self,
+    ctx: &C,
     conversation: &mut Conversation,
     sender: Sender<AgentMessageChunk>,
   ) -> Result<AgentLoopResponse, Error> {
@@ -94,7 +95,7 @@ impl AgentLoop {
         let ts_name = tc.name.split("::").next().unwrap_or(&tc.name);
         let response = match self.tools.get_mut(ts_name) {
           Some(ts) => {
-            let res = ts.handle(&tc.name, tc.arguments).await;
+            let res = ts.handle(ctx, &tc.name, tc.arguments).await;
             trace!("Agent called tool {} with result: {}", tc.name, res);
             res
           }
@@ -117,7 +118,7 @@ impl AgentLoop {
   }
 }
 
-impl Default for AgentLoop {
+impl<C> Default for AgentLoop<C> {
   fn default() -> Self {
     Self {
       max_steps: 20,

@@ -1,5 +1,17 @@
-error: #[tool] can only be applied to top-level functions
- --> tests/ui/self_receiver.rs:5:10
+error: struct is not supported in `trait`s or `impl`s
+ --> tests/ui/self_receiver.rs:4:3
   |
-5 |   fn bad(&self) -> Result<String, anyhow::Error> {
-  |          ^^^^^
+4 |   #[kiruklaw_macros::tool]
+  |   ^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = help: consider moving the struct out to a nearby module scope
+  = note: this error originates in the attribute macro `kiruklaw_macros::tool` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: implementation is not supported in `trait`s or `impl`s
+ --> tests/ui/self_receiver.rs:4:3
+  |
+4 |   #[kiruklaw_macros::tool]
+  |   ^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = help: consider moving the implementation out to a nearby module scope
+  = note: this error originates in the attribute macro `kiruklaw_macros::tool` (in Nightly builds, run with -Z macro-backtrace for more info)

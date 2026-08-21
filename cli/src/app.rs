@@ -497,7 +497,7 @@ impl App {
       match rt {
         Ok(rt) => rt.block_on(async move {
           let mut agent_loop = AgentLoop::new(model_config);
-          let _ = agent_loop.run(&mut conversation, stream_tx).await;
+          let _ = agent_loop.run(&(), &mut conversation, stream_tx).await;
           let _ = done_tx.send(conversation).await;
         }),
         Err(_) => {

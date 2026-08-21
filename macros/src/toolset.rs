@@ -13,12 +13,14 @@ use syn::{
 struct ToolsetAttrs {
   readonly: bool,
   casing: Casing,
+  ctx: Option<Type>,
 }
 
 impl syn::parse::Parse for ToolsetAttrs {
   fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
     let mut readonly = false;
     let mut casing = None;
+    let mut ctx = None;
     while !input.is_empty() {
       let ident: Ident = input.parse()?;
       if ident == "readonly" {
@@ -27,10 +29,13 @@ impl syn::parse::Parse for ToolsetAttrs {
         input.parse::<syn::Token![=]>()?;
         let lit: LitStr = input.parse()?;
         casing = Some(Casing::from_str(&lit.value()).map_err(|e| syn::Error::new(lit.span(), e))?);
+      } else if ident == "ctx" {
+        input.parse::<syn::Token![=]>()?;
+        ctx = Some(input.parse::<Type>()?);
       } else {
         return Err(syn::Error::new(
           ident.span(),
-          "expected `readonly` or `casing`",
+          "expected `readonly`, `casing`, or `ctx`",
         ));
       }
       if input.is_empty() {
@@ -41,6 +46,7 @@ impl syn::parse::Parse for ToolsetAttrs {
     Ok(ToolsetAttrs {
       readonly,
       casing: casing.unwrap_or(Casing::Snake),
+      ctx,
     })
   }
 }
@@ -48,7 +54,7 @@ impl syn::parse::Parse for ToolsetAttrs {
 pub(crate) fn toolset(attr: TokenStream, item: TokenStream) -> TokenStream {
   let impl_block = parse_macro_input!(item as ItemImpl);
 
-  let ToolsetAttrs { casing, readonly } = match syn::parse(attr) {
+  let ToolsetAttrs { casing, readonly, ctx } = match syn::parse(attr) {
     Ok(a) => a,
     Err(e) => return e.to_compile_error().into(),
   };
@@ -89,6 +95,18 @@ pub(crate) fn toolset(attr: TokenStream, item: TokenStream) -> TokenStream {
       _ => None,
     });
 
+    let has_ctx_arg = ctx.as_ref().is_some_and(|ctx_type| {
+      let after_self = if self_receiver.is_some() { 1usize } else { 0 };
+      let Some(FnArg::Typed(pt)) = method.sig.inputs.iter().nth(after_self) else {
+        return false;
+      };
+      let Type::Reference(r) = &*pt.ty else {
+        return false;
+      };
+      let inner = &*r.elem;
+      quote!(#inner).to_string() == quote!(#ctx_type).to_string()
+    });
+
     if readonly {
       if let Some(r) = self_receiver {
         if r.mutability.is_some() {
@@ -122,14 +140,14 @@ pub(crate) fn toolset(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let mut args_fields = Vec::new();
     let mut call_args = Vec::new();
-    let has_self = self_receiver.is_some();
-    let mut first = true;
 
-    for arg in &method.sig.inputs {
-      if has_self && first {
-        first = false;
-        continue;
-      }
+    let mut args_offset = 0usize;
+    if self_receiver.is_some() { args_offset += 1; }
+    if has_ctx_arg { args_offset += 1; }
+
+    for (arg_i, arg) in method.sig.inputs.iter().enumerate() {
+      if arg_i < args_offset { continue }
+
       if let FnArg::Receiver(r) = arg {
         return syn::Error::new_spanned(r, "unexpected second receiver")
           .to_compile_error()
@@ -174,16 +192,11 @@ pub(crate) fn toolset(attr: TokenStream, item: TokenStream) -> TokenStream {
       }
     });
 
-    let call_expr = if self_receiver.is_some() {
-      quote! { self.#method_name(#(#call_args),*) }
-    } else {
-      quote! { Self::#method_name(#(#call_args),*) }
-    };
-    let is_async = method.sig.asyncness.is_some();
-    let awaited_call = if is_async {
-      quote! { #call_expr.await }
-    } else {
-      call_expr
+    let call_expr = match (self_receiver.is_some(), has_ctx_arg) {
+      (true, true)   => quote! { self.#method_name(_ctx, #(#call_args),*).await },
+      (true, false)  => quote! { self.#method_name(#(#call_args),*).await },
+      (false, true)  => quote! { Self::#method_name(_ctx, #(#call_args),*).await },
+      (false, false) => quote! { Self::#method_name(#(#call_args),*).await },
     };
 
     handle_arms.push(quote! {
@@ -193,7 +206,7 @@ pub(crate) fn toolset(attr: TokenStream, item: TokenStream) -> TokenStream {
             Ok(v) => v,
             Err(e) => return format!("Error: {}", e),
           };
-          match #awaited_call {
+          match #call_expr {
             Ok(result) => result,
             Err(err) => format!("Error: {}", err),
           }
@@ -202,17 +215,19 @@ pub(crate) fn toolset(attr: TokenStream, item: TokenStream) -> TokenStream {
     })
   }
 
+  let ctx_path: syn::Type = ctx.unwrap_or_else(|| syn::parse_quote!(()));
+
   let (set_trait_path, toolset_enum_path, handle_self_tok) = if readonly {
     (
       quote! { ::kiruklaw_agent_loop::tools::AgentToolset },
       quote! { ::kiruklaw_agent_loop::tools::Toolset::Immutable },
-      quote! { &self },
+      quote! { &'a self },
     )
   } else {
     (
       quote! { ::kiruklaw_agent_loop::tools::AgentToolsetMut },
       quote! { ::kiruklaw_agent_loop::tools::Toolset::Mutable },
-      quote! { &mut self },
+      quote! { &'a mut self },
     )
   };
 
@@ -220,14 +235,14 @@ pub(crate) fn toolset(attr: TokenStream, item: TokenStream) -> TokenStream {
     #impl_block
 
     impl #struct_ident {
-      pub fn to_toolset(self) -> ::kiruklaw_agent_loop::tools::Toolset {
+      pub fn to_toolset(self) -> ::kiruklaw_agent_loop::tools::Toolset<#ctx_path> {
         #toolset_enum_path(Box::new(self))
       }
     }
 
     #(#args_structs)*
 
-    impl #set_trait_path for #struct_ident {
+    impl #set_trait_path<#ctx_path> for #struct_ident {
       fn name(&self) -> &'static str {
         #namespace
       }
@@ -236,7 +251,7 @@ pub(crate) fn toolset(attr: TokenStream, item: TokenStream) -> TokenStream {
         vec![#(#descriptors),*]
       }
 
-      fn handle(#handle_self_tok, tool_name: &str, args: String) -> ::std::pin::Pin<::std::boxed::Box<dyn ::std::future::Future<Output = String> + Send + '_>> {
+      fn handle<'a>(#handle_self_tok, _ctx: &'a #ctx_path, tool_name: &str, args: String) -> ::std::pin::Pin<::std::boxed::Box<dyn ::std::future::Future<Output = String> + Send + 'a>> {
         match tool_name {
           #(#handle_arms)*
           _ => {

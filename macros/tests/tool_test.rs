@@ -7,7 +7,7 @@ use kiruklaw_macros::tool;
 /// Adds two numbers together.
 /// @a First operand
 /// @b Second operand
-fn add(a: i64, b: i64) -> Result<String, anyhow::Error> {
+async fn add(a: i64, b: i64) -> Result<String, anyhow::Error> {
   Ok(format!("{a} + {b} = {}", a + b))
 }
 
@@ -34,27 +34,27 @@ async fn descriptor_fields() {
 #[tokio::test]
 async fn handle_success() {
   let t = Add;
-  let result = t.handle("add", r#"{"a": 1, "b": 2}"#.to_string()).await;
+  let result = t.handle(&(), "add", r#"{"a": 1, "b": 2}"#.to_string()).await;
   assert_eq!(result, "1 + 2 = 3");
 }
 
 #[tokio::test]
 async fn handle_parse_error() {
   let t = Add;
-  let result = t.handle("add", "invalid json".to_string()).await;
+  let result = t.handle(&(), "add", "invalid json".to_string()).await;
   assert!(result.starts_with("Error: "));
 }
 
 #[tool]
 #[allow(unused)]
-fn always_err() -> Result<String, anyhow::Error> {
+async fn always_err() -> Result<String, anyhow::Error> {
   Err(anyhow::anyhow!("something went wrong"))
 }
 
 #[tokio::test]
 async fn handle_fn_error() {
   let t = AlwaysErr;
-  let result = t.handle("always_err", r#"{}"#.to_string()).await;
+  let result = t.handle(&(), "always_err", r#"{}"#.to_string()).await;
   assert_eq!(result, "Error: something went wrong");
 }
 
@@ -63,7 +63,7 @@ async fn handle_fn_error() {
 /// Greets a person.
 /// @name Name of the person
 /// @excited Add excitement
-fn greet(name: String, excited: Option<bool>) -> Result<String, anyhow::Error> {
+async fn greet(name: String, excited: Option<bool>) -> Result<String, anyhow::Error> {
   match excited {
     Some(true) => Ok(format!("Hello, {}!!!", name)),
     _ => Ok(format!("Hello, {}.", name)),
@@ -72,8 +72,7 @@ fn greet(name: String, excited: Option<bool>) -> Result<String, anyhow::Error> {
 
 #[tokio::test]
 async fn optional_arg_descriptor() {
-  let t = Greet;
-  let descs = t.tools();
+  let descs = Greet.tools();
   assert_eq!(descs.len(), 1);
   let desc = &descs[0];
   assert_eq!(desc.args.len(), 2);
@@ -88,18 +87,16 @@ async fn optional_arg_descriptor() {
 #[tokio::test]
 async fn optional_arg_handle() {
   let t = Greet;
-  let result = t.handle("greet", r#"{"name": "world"}"#.to_string()).await;
+  let result = t.handle(&(), "greet", r#"{"name": "world"}"#.to_string()).await;
   assert_eq!(result, "Hello, world.");
 
-  let result = t
-    .handle("greet", r#"{"name": "world", "excited": true}"#.to_string())
-    .await;
+  let result = t.handle(&(), "greet", r#"{"name": "world", "excited": true}"#.to_string()).await;
   assert_eq!(result, "Hello, world!!!");
 }
 
 #[tool]
 #[allow(unused)]
-fn no_args() -> Result<String, anyhow::Error> {
+async fn no_args() -> Result<String, anyhow::Error> {
   Ok("pong".to_string())
 }
 
@@ -115,13 +112,13 @@ async fn no_args_descriptor() {
 #[tokio::test]
 async fn no_args_handle() {
   let t = NoArgs;
-  let result = t.handle("no_args", r#"{}"#.to_string()).await;
+  let result = t.handle(&(), "no_args", r#"{}"#.to_string()).await;
   assert_eq!(result, "pong");
 }
 
 #[tool]
 #[allow(unused)]
-fn no_docs(x: i64) -> Result<String, anyhow::Error> {
+async fn no_docs(x: i64) -> Result<String, anyhow::Error> {
   Ok(format!("{}", x))
 }
 
@@ -140,7 +137,7 @@ async fn missing_docs() {
 /// Adds two numbers together.
 /// @first_operand First operand
 /// @second_operand Second operand
-fn add_camel(first_operand: i64, second_operand: i64) -> Result<String, anyhow::Error> {
+async fn add_camel(first_operand: i64, second_operand: i64) -> Result<String, anyhow::Error> {
   Ok(format!("{}", first_operand + second_operand))
 }
 
@@ -152,7 +149,7 @@ async fn casing_camel() {
   assert_eq!(descs[0].args[0].name, "firstOperand");
   assert_eq!(descs[0].args[1].name, "secondOperand");
   assert_eq!(
-    t.handle("addCamel", r#"{"firstOperand": 1, "secondOperand": 2}"#.to_string()).await,
+    t.handle(&(), "addCamel", r#"{"firstOperand": 1, "secondOperand": 2}"#.to_string()).await,
     "3"
   );
 }
@@ -162,7 +159,7 @@ async fn casing_camel() {
 /// Adds two numbers together.
 /// @first_operand First operand
 /// @second_operand Second operand
-fn add_kebab(first_operand: i64, second_operand: i64) -> Result<String, anyhow::Error> {
+async fn add_kebab(first_operand: i64, second_operand: i64) -> Result<String, anyhow::Error> {
   Ok(format!("{}", first_operand + second_operand))
 }
 
@@ -174,11 +171,7 @@ async fn casing_kebab() {
   assert_eq!(descs[0].args[0].name, "first-operand");
   assert_eq!(descs[0].args[1].name, "second-operand");
   assert_eq!(
-    t.handle(
-      "add-kebab",
-      r#"{"first-operand": 1, "second-operand": 2}"#.to_string()
-    )
-    .await,
+    t.handle(&(), "add-kebab", r#"{"first-operand": 1, "second-operand": 2}"#.to_string()).await,
     "3"
   );
 }
@@ -188,7 +181,7 @@ async fn casing_kebab() {
 /// Adds two numbers together.
 /// @first_operand First operand
 /// @second_operand Second operand
-fn add_pascal(first_operand: i64, second_operand: i64) -> Result<String, anyhow::Error> {
+async fn add_pascal(first_operand: i64, second_operand: i64) -> Result<String, anyhow::Error> {
   Ok(format!("{}", first_operand + second_operand))
 }
 
@@ -201,6 +194,7 @@ async fn casing_pascal() {
   assert_eq!(descs[0].args[1].name, "SecondOperand");
   assert_eq!(
     t.handle(
+      &(),
       "AddPascal",
       r#"{"FirstOperand": 1, "SecondOperand": 2}"#.to_string()
     )
