@@ -23,8 +23,8 @@ pub(crate) fn tool(attr: TokenStream, item: TokenStream) -> TokenStream {
     #[derive(Debug, Clone, Copy)]
     #vis struct #struct_ident;
 
-    #[::kiruklaw_agent_loop::macros::toolset(readonly, #casing)]
-    impl #struct_ident {
+    #[::kiruklaw_agent_loop::macros::toolset(#casing)]
+    impl ::kiruklaw_agent_loop::tools::AgentToolset<()> for #struct_ident {
       #func
     }
   }

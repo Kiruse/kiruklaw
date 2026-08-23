@@ -59,7 +59,7 @@ impl<C> AgentLoop<C> {
 
   pub async fn run(
     &mut self,
-    ctx: &C,
+    ctx: &mut C,
     conversation: &mut Conversation,
     sender: Sender<AgentMessageChunk>,
   ) -> Result<AgentLoopResponse, Error> {

@@ -6,37 +6,26 @@ use proc_macro2::Span;
 use quote::quote;
 use std::{collections::HashMap, str::FromStr};
 use syn::{
-  Attribute, Expr, ExprLit, FnArg, Ident, ImplItem, ItemImpl, Lit, LitStr, Meta, Type,
-  parse_macro_input,
+  Attribute, Expr, ExprLit, FnArg, GenericArgument, Ident, ImplItem, ItemImpl, Lit, LitStr, Meta, Path, PathArguments, Type, parse_macro_input,
 };
 
 struct ToolsetAttrs {
-  readonly: bool,
   casing: Casing,
-  ctx: Option<Type>,
 }
 
 impl syn::parse::Parse for ToolsetAttrs {
   fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
-    let mut readonly = false;
     let mut casing = None;
-    let mut ctx = None;
     while !input.is_empty() {
       let ident: Ident = input.parse()?;
-      if ident == "readonly" {
-        readonly = true;
-      } else if ident == "casing" {
+      if ident == "casing" {
         input.parse::<syn::Token![=]>()?;
         let lit: LitStr = input.parse()?;
-        casing = Some(Casing::from_str(&lit.value()).map_err(|e| syn::Error::new(lit.span(), e))?);
-      } else if ident == "ctx" {
-        input.parse::<syn::Token![=]>()?;
-        ctx = Some(input.parse::<Type>()?);
+        casing = Some(
+          Casing::from_str(&lit.value()).map_err(|e| syn::Error::new(lit.span(), e))?,
+        );
       } else {
-        return Err(syn::Error::new(
-          ident.span(),
-          "expected `readonly`, `casing`, or `ctx`",
-        ));
+        return Err(syn::Error::new(ident.span(), "expected `casing`"));
       }
       if input.is_empty() {
         break;
@@ -44,9 +33,7 @@ impl syn::parse::Parse for ToolsetAttrs {
       input.parse::<syn::Token![,]>()?;
     }
     Ok(ToolsetAttrs {
-      readonly,
       casing: casing.unwrap_or(Casing::Snake),
-      ctx,
     })
   }
 }
@@ -54,19 +41,10 @@ impl syn::parse::Parse for ToolsetAttrs {
 pub(crate) fn toolset(attr: TokenStream, item: TokenStream) -> TokenStream {
   let impl_block = parse_macro_input!(item as ItemImpl);
 
-  let ToolsetAttrs { casing, readonly, ctx } = match syn::parse(attr) {
+  let ToolsetAttrs { casing } = match syn::parse(attr) {
     Ok(a) => a,
     Err(e) => return e.to_compile_error().into(),
   };
-
-  if !impl_block.generics.params.is_empty() {
-    return syn::Error::new_spanned(
-      &impl_block.generics,
-      "#[toolset] does not support generic impl blocks",
-    )
-    .to_compile_error()
-    .into();
-  }
 
   let struct_ident = match &*impl_block.self_ty {
     Type::Path(tp) => tp.path.segments.last().expect("empty path").ident.clone(),
@@ -80,8 +58,21 @@ pub(crate) fn toolset(attr: TokenStream, item: TokenStream) -> TokenStream {
     }
   };
 
+  let self_ty = &impl_block.self_ty;
   let struct_name = struct_ident.to_string();
   let namespace = casing.recase(&struct_name);
+
+  let InspectImplResult {
+    readonly,
+    is_trait_impl,
+    ctx_path,
+    trait_path,
+  } = match inspect_impl(&impl_block) {
+    Ok(r) => r,
+    Err(e) => {
+      return e.to_compile_error().into();
+    }
+  };
 
   let mut descriptors = Vec::new();
   let mut args_structs = Vec::new();
@@ -95,24 +86,25 @@ pub(crate) fn toolset(attr: TokenStream, item: TokenStream) -> TokenStream {
       _ => None,
     });
 
-    let has_ctx_arg = ctx.as_ref().is_some_and(|ctx_type| {
+    let has_ctx_arg = {
       let after_self = if self_receiver.is_some() { 1usize } else { 0 };
-      let Some(FnArg::Typed(pt)) = method.sig.inputs.iter().nth(after_self) else {
-        return false;
-      };
-      let Type::Reference(r) = &*pt.ty else {
-        return false;
-      };
-      let inner = &*r.elem;
-      quote!(#inner).to_string() == quote!(#ctx_type).to_string()
-    });
+      method.sig.inputs
+        .iter()
+        .nth(after_self)
+        .is_some_and(|arg| {
+          let FnArg::Typed(pt) = arg else { return false };
+          let Type::Reference(r) = &*pt.ty else { return false };
+          let inner = &*r.elem;
+          quote!(#inner).to_string() == quote!(#ctx_path).to_string()
+        })
+    };
 
     if readonly {
       if let Some(r) = self_receiver {
         if r.mutability.is_some() {
           return syn::Error::new_spanned(
             r,
-            "#[toolset(readonly)] methods must take &self, not &mut self",
+            "AgentToolset methods must take &self, not &mut self",
           )
           .to_compile_error()
           .into();
@@ -142,11 +134,11 @@ pub(crate) fn toolset(attr: TokenStream, item: TokenStream) -> TokenStream {
     let mut call_args = Vec::new();
 
     let mut args_offset = 0usize;
-    if self_receiver.is_some() { args_offset += 1; }
-    if has_ctx_arg { args_offset += 1; }
+    if self_receiver.is_some() { args_offset += 1 };
+    if has_ctx_arg { args_offset += 1 };
 
     for (arg_i, arg) in method.sig.inputs.iter().enumerate() {
-      if arg_i < args_offset { continue }
+      if arg_i < args_offset { continue };
 
       if let FnArg::Receiver(r) = arg {
         return syn::Error::new_spanned(r, "unexpected second receiver")
@@ -160,10 +152,9 @@ pub(crate) fn toolset(attr: TokenStream, item: TokenStream) -> TokenStream {
       let ty = &pt.ty;
 
       let doc = arg_descs.get(&name_str).cloned().unwrap_or_default();
-      let field_attr = if doc.is_empty() {
-        quote! { #name: #ty }
-      } else {
-        quote! { #[toolarg(desc = #doc)] #name: #ty }
+      let field_attr = match doc.is_empty() {
+        true  => quote! { #name: #ty },
+        false => quote! { #[toolarg(desc = #doc)] #name: #ty },
       };
       args_fields.push(field_attr);
       call_args.push(quote! { args.#name });
@@ -177,12 +168,10 @@ pub(crate) fn toolset(attr: TokenStream, item: TokenStream) -> TokenStream {
       )
     });
 
-    let serde_rename_all = casing.to_serde_rename();
     let casing_str = casing.as_str();
-    let serde_attr = match serde_rename_all {
-      Some(r) => quote! { #[serde(rename_all = #r)] },
-      None => quote! {},
-    };
+    let serde_attr = casing.to_serde_rename()
+      .map(|rename| quote! { #[serde(rename_all = #rename)] })
+      .unwrap_or_default();
     args_structs.push(quote! {
       #[derive(::kiruklaw_agent_loop::macros::AgentToolArgs, ::serde::Deserialize)]
       #[toolargs(casing = #casing_str)]
@@ -193,9 +182,9 @@ pub(crate) fn toolset(attr: TokenStream, item: TokenStream) -> TokenStream {
     });
 
     let call_expr = match (self_receiver.is_some(), has_ctx_arg) {
-      (true, true)   => quote! { self.#method_name(_ctx, #(#call_args),*).await },
-      (true, false)  => quote! { self.#method_name(#(#call_args),*).await },
-      (false, true)  => quote! { Self::#method_name(_ctx, #(#call_args),*).await },
+      (true, true) => quote! { self.#method_name(_ctx, #(#call_args),*).await },
+      (true, false) => quote! { self.#method_name(#(#call_args),*).await },
+      (false, true) => quote! { Self::#method_name(_ctx, #(#call_args),*).await },
       (false, false) => quote! { Self::#method_name(#(#call_args),*).await },
     };
 
@@ -212,58 +201,88 @@ pub(crate) fn toolset(attr: TokenStream, item: TokenStream) -> TokenStream {
           }
         })
       }
-    })
+    });
   }
 
-  let ctx_path: syn::Type = ctx.unwrap_or_else(|| syn::parse_quote!(()));
-
-  let (set_trait_path, toolset_enum_path, handle_self_tok) = if readonly {
-    (
-      quote! { ::kiruklaw_agent_loop::tools::AgentToolset },
-      quote! { ::kiruklaw_agent_loop::tools::Toolset::Immutable },
-      quote! { &'a self },
-    )
-  } else {
-    (
-      quote! { ::kiruklaw_agent_loop::tools::AgentToolsetMut },
-      quote! { ::kiruklaw_agent_loop::tools::Toolset::Mutable },
-      quote! { &'a mut self },
-    )
+  let handle_self_tok = match readonly {
+    true  => quote! { &'__kt self },
+    false => quote! { &'__kt mut self },
   };
 
-  quote! {
-    #impl_block
-
-    impl #struct_ident {
-      pub fn to_toolset(self) -> ::kiruklaw_agent_loop::tools::Toolset<#ctx_path> {
-        #toolset_enum_path(Box::new(self))
-      }
+  let trait_methods = quote! {
+    fn name(&self) -> &'static str {
+      #namespace
     }
 
-    #(#args_structs)*
+    fn tools(&self) -> Vec<::kiruklaw_agent_loop::tools::AgentToolDescriptor> {
+      vec![#(#descriptors),*]
+    }
 
-    impl #set_trait_path<#ctx_path> for #struct_ident {
-      fn name(&self) -> &'static str {
-        #namespace
-      }
-
-      fn tools(&self) -> Vec<::kiruklaw_agent_loop::tools::AgentToolDescriptor> {
-        vec![#(#descriptors),*]
-      }
-
-      fn handle<'a>(#handle_self_tok, _ctx: &'a #ctx_path, tool_name: &str, args: String) -> ::std::pin::Pin<::std::boxed::Box<dyn ::std::future::Future<Output = String> + Send + 'a>> {
-        match tool_name {
-          #(#handle_arms)*
-          _ => {
-            let name = tool_name.to_string();
-            ::std::boxed::Box::pin(async move {
-              format!("Error: unknown tool {}", name)
-            })
-          }
+    fn handle<'__kt>(
+      #handle_self_tok,
+      _ctx: &'__kt mut #ctx_path,
+      tool_name: &str,
+      args: String,
+    ) -> ::std::pin::Pin<
+      ::std::boxed::Box<dyn ::std::future::Future<Output = String> + Send + '__kt>,
+    > {
+      match tool_name {
+        #(#handle_arms)*
+        _ => {
+          let name = tool_name.to_string();
+          ::std::boxed::Box::pin(async move {
+            format!("Error: unknown tool {}", name)
+          })
         }
       }
     }
-  }.into()
+  };
+
+  if is_trait_impl {
+    let trait_path = trait_path.unwrap();
+    let (impl_generics, _, where_clause) = impl_block.generics.split_for_impl();
+    let impl_attrs = &impl_block.attrs;
+    let impl_items = &impl_block.items;
+
+    let toolset_enum_variant = match readonly {
+      true  => quote! { ::kiruklaw_agent_loop::tools::Toolset::Immutable },
+      false => quote! { ::kiruklaw_agent_loop::tools::Toolset::Mutable },
+    };
+
+    quote! {
+      #(#impl_attrs)*
+      impl #impl_generics #self_ty #where_clause {
+        #(#impl_items)*
+
+        pub fn to_toolset(self) -> ::kiruklaw_agent_loop::tools::Toolset<#ctx_path> {
+          #toolset_enum_variant(::std::boxed::Box::new(self))
+        }
+      }
+
+      #(#impl_attrs)*
+      impl #impl_generics #trait_path for #self_ty #where_clause {
+        #trait_methods
+      }
+
+      #(#args_structs)*
+    }.into()
+  } else {
+    quote! {
+      #impl_block
+
+      impl #self_ty {
+        pub fn to_toolset(self) -> ::kiruklaw_agent_loop::tools::Toolset<()> {
+          ::kiruklaw_agent_loop::tools::Toolset::Immutable(::std::boxed::Box::new(self))
+        }
+      }
+
+      #(#args_structs)*
+
+      impl ::kiruklaw_agent_loop::tools::AgentToolset<()> for #self_ty {
+        #trait_methods
+      }
+    }.into()
+  }
 }
 
 fn extract_doc_lines(attrs: &[Attribute]) -> Vec<String> {
@@ -299,4 +318,68 @@ fn parse_arg_descriptions(doc_lines: &[String]) -> HashMap<String, String> {
     }
   }
   descs
+}
+
+struct InspectImplResult {
+  pub readonly: bool,
+  pub is_trait_impl: bool,
+  pub ctx_path: Type,
+  pub trait_path: Option<Path>,
+}
+
+fn inspect_impl(impl_block: &ItemImpl) -> Result<InspectImplResult, syn::Error> {
+  match &impl_block.trait_ {
+    Some((_, tp, _)) => {
+      let last = tp.segments.last().expect("empty trait path");
+      let name = last.ident.to_string();
+      let readonly = match name.as_str() {
+        "AgentToolset" => true,
+        "AgentToolsetMut" => false,
+        other => {
+          return Err(syn::Error::new_spanned(
+            tp,
+            format!("expected `AgentToolset` or `AgentToolsetMut`, found `{other}`"),
+          ));
+        }
+      };
+      let ctx_path = match &last.arguments {
+        PathArguments::AngleBracketed(ab) => {
+          if ab.args.len() != 1 {
+            return Err(syn::Error::new_spanned(
+              &last.arguments,
+              "expected at most one generic argument for the context type",
+            ));
+          }
+          match &ab.args[0] {
+            GenericArgument::Type(t) => t.clone(),
+            _ => {
+              return Err(syn::Error::new_spanned(
+                &last.arguments,
+                "expected a type argument for the context type",
+              ));
+            }
+          }
+        }
+        PathArguments::None => syn::parse_quote!(()),
+        _ => {
+          return Err(syn::Error::new_spanned(
+            &last.arguments,
+            "expected angle-bracketed or no generic arguments on the trait",
+          ));
+        }
+      };
+      Ok(InspectImplResult {
+        readonly,
+        is_trait_impl: true,
+        ctx_path,
+        trait_path: Some(tp.clone()),
+      })
+    }
+    None => Ok(InspectImplResult {
+      readonly: true,
+      is_trait_impl: false,
+      ctx_path: syn::parse_quote!(()),
+      trait_path: None,
+    }),
+  }
 }
