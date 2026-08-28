@@ -9,7 +9,8 @@ pub trait AgentToolset<C = ()>: Send + Sync {
   /// descriptors will include the toolset's name as namespace.
   fn tools(&self) -> Vec<AgentToolDescriptor>;
   /// Execute the given named tool, without toolset namespace.
-  fn handle<'a>(&'a self, ctx: &'a mut C, tool_name: &str, args: String) -> Pin<Box<dyn Future<Output = String> + Send + 'a>>;
+  fn handle<'a>(&'a self, ctx: C, tool_name: &str, args: String) -> Pin<Box<dyn Future<Output = String> + Send + 'a>>
+  where C: 'a;
 }
 
 pub trait AgentToolsetMut<C = ()>: Send + Sync {
@@ -19,7 +20,8 @@ pub trait AgentToolsetMut<C = ()>: Send + Sync {
   /// descriptors will include the toolset's name as namespace.
   fn tools(&self) -> Vec<AgentToolDescriptor>;
   /// Execute the given named tool, without toolset namespace.
-  fn handle<'a>(&'a mut self, ctx: &'a mut C, tool_name: &str, args: String) -> Pin<Box<dyn Future<Output = String> + Send + 'a>>;
+  fn handle<'a>(&'a mut self, ctx: C, tool_name: &str, args: String) -> Pin<Box<dyn Future<Output = String> + Send + 'a>>
+  where C: 'a;
 }
 
 pub enum Toolset<C = ()> {
@@ -42,7 +44,8 @@ impl<C> Toolset<C> {
     }
   }
 
-  pub fn handle<'a>(&'a mut self, ctx: &'a mut C, tool_name: &str, args: String) -> Pin<Box<dyn Future<Output = String> + Send + 'a>> {
+  pub fn handle<'a>(&'a mut self, ctx: C, tool_name: &str, args: String) -> Pin<Box<dyn Future<Output = String> + Send + 'a>>
+  where C: 'a {
     match self {
       Self::Immutable(t) => t.handle(ctx, tool_name, args),
       Self::Mutable(t) => t.handle(ctx, tool_name, args),

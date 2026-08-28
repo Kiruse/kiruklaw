@@ -34,14 +34,14 @@ async fn descriptor_fields() {
 #[tokio::test]
 async fn handle_success() {
   let t = Add;
-  let result = t.handle(&mut (), "add", r#"{"a": 1, "b": 2}"#.to_string()).await;
+  let result = t.handle((), "add", r#"{"a": 1, "b": 2}"#.to_string()).await;
   assert_eq!(result, "1 + 2 = 3");
 }
 
 #[tokio::test]
 async fn handle_parse_error() {
   let t = Add;
-  let result = t.handle(&mut (), "add", "invalid json".to_string()).await;
+  let result = t.handle((), "add", "invalid json".to_string()).await;
   assert!(result.starts_with("Error: "));
 }
 
@@ -54,7 +54,7 @@ async fn always_err() -> Result<String, anyhow::Error> {
 #[tokio::test]
 async fn handle_fn_error() {
   let t = AlwaysErr;
-  let result = t.handle(&mut (), "always_err", r#"{}"#.to_string()).await;
+  let result = t.handle((), "always_err", r#"{}"#.to_string()).await;
   assert_eq!(result, "Error: something went wrong");
 }
 
@@ -87,10 +87,10 @@ async fn optional_arg_descriptor() {
 #[tokio::test]
 async fn optional_arg_handle() {
   let t = Greet;
-  let result = t.handle(&mut (), "greet", r#"{"name": "world"}"#.to_string()).await;
+  let result = t.handle((), "greet", r#"{"name": "world"}"#.to_string()).await;
   assert_eq!(result, "Hello, world.");
 
-  let result = t.handle(&mut (), "greet", r#"{"name": "world", "excited": true}"#.to_string()).await;
+  let result = t.handle((), "greet", r#"{"name": "world", "excited": true}"#.to_string()).await;
   assert_eq!(result, "Hello, world!!!");
 }
 
@@ -112,7 +112,7 @@ async fn no_args_descriptor() {
 #[tokio::test]
 async fn no_args_handle() {
   let t = NoArgs;
-  let result = t.handle(&mut (), "no_args", r#"{}"#.to_string()).await;
+  let result = t.handle((), "no_args", r#"{}"#.to_string()).await;
   assert_eq!(result, "pong");
 }
 
@@ -149,7 +149,7 @@ async fn casing_camel() {
   assert_eq!(descs[0].args[0].name, "firstOperand");
   assert_eq!(descs[0].args[1].name, "secondOperand");
   assert_eq!(
-    t.handle(&mut (), "addCamel", r#"{"firstOperand": 1, "secondOperand": 2}"#.to_string()).await,
+    t.handle((), "addCamel", r#"{"firstOperand": 1, "secondOperand": 2}"#.to_string()).await,
     "3"
   );
 }
@@ -171,7 +171,7 @@ async fn casing_kebab() {
   assert_eq!(descs[0].args[0].name, "first-operand");
   assert_eq!(descs[0].args[1].name, "second-operand");
   assert_eq!(
-    t.handle(&mut (), "add-kebab", r#"{"first-operand": 1, "second-operand": 2}"#.to_string()).await,
+    t.handle((), "add-kebab", r#"{"first-operand": 1, "second-operand": 2}"#.to_string()).await,
     "3"
   );
 }
@@ -194,7 +194,7 @@ async fn casing_pascal() {
   assert_eq!(descs[0].args[1].name, "SecondOperand");
   assert_eq!(
     t.handle(
-      &mut (),
+      (),
       "AddPascal",
       r#"{"FirstOperand": 1, "SecondOperand": 2}"#.to_string()
     )

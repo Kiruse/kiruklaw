@@ -93,9 +93,8 @@ pub(crate) fn toolset(attr: TokenStream, item: TokenStream) -> TokenStream {
         .nth(after_self)
         .is_some_and(|arg| {
           let FnArg::Typed(pt) = arg else { return false };
-          let Type::Reference(r) = &*pt.ty else { return false };
-          let inner = &*r.elem;
-          quote!(#inner).to_string() == quote!(#ctx_path).to_string()
+          let ty = *pt.ty.clone();
+          quote!(#ty).to_string() == quote!(#ctx_path).to_string()
         })
     };
 
@@ -205,8 +204,8 @@ pub(crate) fn toolset(attr: TokenStream, item: TokenStream) -> TokenStream {
   }
 
   let handle_self_tok = match readonly {
-    true  => quote! { &'__kt self },
-    false => quote! { &'__kt mut self },
+    true  => quote! { &'__kh self },
+    false => quote! { &'__kh mut self },
   };
 
   let trait_methods = quote! {
@@ -218,14 +217,16 @@ pub(crate) fn toolset(attr: TokenStream, item: TokenStream) -> TokenStream {
       vec![#(#descriptors),*]
     }
 
-    fn handle<'__kt>(
+    fn handle<'__kh>(
       #handle_self_tok,
-      _ctx: &'__kt mut #ctx_path,
+      _ctx: #ctx_path,
       tool_name: &str,
       args: String,
     ) -> ::std::pin::Pin<
-      ::std::boxed::Box<dyn ::std::future::Future<Output = String> + Send + '__kt>,
-    > {
+      ::std::boxed::Box<dyn ::std::future::Future<Output = String> + Send + '__kh>,
+    >
+    where #ctx_path: '__kh
+    {
       match tool_name {
         #(#handle_arms)*
         _ => {

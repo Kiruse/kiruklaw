@@ -16,7 +16,7 @@ pub async fn run(
 
 Runs the full multi-step loop on the `AgentLoop` struct. On each step, calls `prompt()` to get an LLM response. If the response contains tool calls, dispatches them (looked up by name from `self.tools`) and pushes the results into the conversation before the next step. If no tool calls, the loop terminates. Streams all chunks (content, reasoning, tool call fragments, done) to the caller via the `sender` channel. Accumulates `AgentUsage` across steps and includes it in the returned `AgentLoopResponse`.
 
-Toolsets are stored as `HashMap<String, Toolset>` keyed by toolset name and can be set via `AgentLoop::with_toolsets()` which accepts `impl Iterator<Item = Toolset>`. Descriptors are collected via `ts.tools()` from each toolset. Tool calls are dispatched by splitting `tc.name` on `::` to find the target toolset, then calling `ts.handle(&tc.name, tc.arguments)`.
+Toolsets are stored as `HashMap<String, Toolset>` keyed by toolset name and can be set via `AgentLoop::with_toolsets()` which accepts `impl Iterator<Item = Toolset>`. Descriptors are collected via `ts.tools()` from each toolset. Tool calls are dispatched by splitting `tc.name` on `::` to find the target toolset, then calling `ts.handle(ctx, &tc.name, tc.arguments)` where `ctx` is the owned context value (cloned by the caller for sequential dispatch).
 
 ### `prompt`
 
@@ -102,8 +102,8 @@ Number of steps actually taken (the index of the final step, not a count), toget
 
 Two toolset traits are defined in `tools.rs`:
 
-- **`AgentToolset`** -- readonly trait (`Send + Sync`). Methods: `name(&self) -> &'static str`, `tools(&self) -> Vec<AgentToolDescriptor>`, `handle(&self, tool_name: &str, args: String) -> Pin<Box<dyn Future<Output = String> + Send + '_>>`.
-- **`AgentToolsetMut`** -- mutable trait. Same signatures as `AgentToolset` but `handle` takes `&mut self`.
+- **`AgentToolset<C>`** -- readonly trait (`Send + Sync`). Methods: `name(&self) -> &'static str`, `tools(&self) -> Vec<AgentToolDescriptor>`, `handle<'a>(&'a self, ctx: C, tool_name: &'a str, args: String) -> Pin<Box<dyn Future<Output = String> + Send + 'a>> where C: 'a`.
+- **`AgentToolsetMut<C>`** -- mutable trait. Same signatures as `AgentToolset` but `handle` takes `&mut self`.
 
 The **`Toolset`** enum unifies both:
 
@@ -114,13 +114,13 @@ pub enum Toolset {
 }
 ```
 
-Exposes unified `name()`, `tools()`, and `handle(&mut self, ...)` methods.
+Exposes unified `name()`, `tools()`, and `handle<'a>(&'a mut self, ctx: C, tool_name: &'a str, args: String) -> Pin<Box<dyn Future<Output = String> + Send + 'a>> where C: 'a` methods.
 
 The `AgentLoop` stores toolsets as `HashMap<String, Toolset>` keyed by toolset name and dispatches via the `Toolset` enum's unified interface.
 
 ## Tool dispatch
 
-Tool calls in the LLM response are dispatched by splitting `tc.name` on `::` to locate the target toolset in the `tools` HashMap (the part before `::` is the toolset name). If the toolset is found, `toolset.handle(&tc.name, tc.arguments)` is called and the result is pushed as a `Tool` message. If not found, an error string is returned. Tool calls are executed sequentially within a step.
+Tool calls in the LLM response are dispatched by splitting `tc.name` on `::` to locate the target toolset in the `tools` HashMap (the part before `::` is the toolset name). If the toolset is found, `toolset.handle(ctx, &tc.name, tc.arguments)` is called (with owned `ctx` value) and the result is pushed as a `Tool` message. If not found, an error string is returned. Tool calls are executed sequentially within a step.
 
 ## Wire protocol
 

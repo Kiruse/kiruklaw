@@ -76,13 +76,13 @@ struct CtxTools;
 #[toolset]
 impl<'a> AgentToolset<AppCtx<'a>> for CtxTools {
   /// Returns the user id from context.
-  async fn get_user_id(&self, ctx: &mut AppCtx<'a>) -> Result<String, anyhow::Error> {
+  async fn get_user_id(&self, ctx: AppCtx<'a>) -> Result<String, anyhow::Error> {
     Ok(format!("{}", ctx.user_id))
   }
 
   /// Returns a greeting.
   /// @name The name to greet
-  async fn greet_user(&self, ctx: &mut AppCtx<'a>, name: String) -> Result<String, anyhow::Error> {
+  async fn greet_user(&self, ctx: AppCtx<'a>, name: String) -> Result<String, anyhow::Error> {
     Ok(format!("user {} says hi {}", ctx.owner, name))
   }
 }
@@ -118,7 +118,7 @@ async fn descriptor_fields() {
 #[tokio::test]
 async fn handle_success() {
   let tools = MathTools::default();
-  let result = tools    .handle(&mut (), "add", r#"{"a": 1, "b": 2}"#.to_string()).await;
+  let result = tools    .handle((), "add", r#"{"a": 1, "b": 2}"#.to_string()).await;
   assert_eq!(result, "1 + 2 = 3");
 }
 
@@ -128,7 +128,7 @@ async fn handle_stateful() {
     precision: 2,
     ..Default::default()
   };
-  let result = tools.handle(&mut (), "add", r#"{"a": 1, "b": 2}"#.to_string()).await;
+  let result = tools.handle((), "add", r#"{"a": 1, "b": 2}"#.to_string()).await;
   assert_eq!(result, "1.00 + 2.00 = 3.00");
 }
 
@@ -136,7 +136,7 @@ async fn handle_stateful() {
 async fn handle_parse_error() {
   let tools = MathTools::default();
   let result = tools
-    .handle(&mut (), "math_tools::add", "invalid json".to_string())
+    .handle((), "math_tools::add", "invalid json".to_string())
     .await;
   assert!(result.starts_with("Error: "));
 }
@@ -145,7 +145,7 @@ async fn handle_parse_error() {
 async fn handle_unknown_tool() {
   let tools = MathTools::default();
   let result = tools
-    .handle(&mut (), "nonexistent", r#"{}"#.to_string())
+    .handle((), "nonexistent", r#"{}"#.to_string())
     .await;
   assert_eq!(result, "Error: unknown tool nonexistent");
 }
@@ -169,12 +169,12 @@ async fn optional_arg_handle() {
     ..Default::default()
   };
   assert_eq!(
-    tools.handle(&mut (), "greet", r#"{}"#.to_string()).await,
+    tools.handle((), "greet", r#"{}"#.to_string()).await,
     "Hello, world."
   );
   assert_eq!(
     tools
-      .handle(&mut (), "greet", r#"{"excited": true}"#.to_string())
+      .handle((), "greet", r#"{"excited": true}"#.to_string())
       .await,
     "Hello, world!!!"
   );
@@ -197,7 +197,7 @@ async fn no_args() {
   assert_eq!(descs.len(), 1);
   assert_eq!(descs[0].name, "pinger::ping");
   assert!(descs[0].args.is_empty());
-  assert_eq!(p.handle(&mut (), "ping", r#"{}"#.to_string()).await, "pong");
+  assert_eq!(p.handle((), "ping", r#"{}"#.to_string()).await, "pong");
 }
 
 #[tokio::test]
@@ -224,7 +224,7 @@ async fn casing_camel() {
   assert_eq!(descs[0].args[1].name, "secondOperand");
   assert_eq!(
     ct.handle(
-      &mut (),
+      (),
       "multiply",
       r#"{"firstOperand": 3, "secondOperand": 4}"#.to_string()
     )
@@ -247,7 +247,7 @@ async fn namespace_acronym_struct() {
   let t = HTTPTools;
   assert_eq!(t.name(), "http_tools");
   assert_eq!(t.tools()[0].name, "http_tools::get");
-  assert_eq!(t.handle(&mut (), "get", r#"{}"#.to_string()).await, "ok");
+  assert_eq!(t.handle((), "get", r#"{}"#.to_string()).await, "ok");
 }
 
 #[tokio::test]
@@ -286,11 +286,11 @@ async fn namespace_acronym_suffix_struct() {
 async fn mutable() {
   let mut c = Counter::default();
   assert_eq!(
-    c.handle(&mut (), "increment", r#"{"amount": 3}"#.to_string()).await,
+    c.handle((), "increment", r#"{"amount": 3}"#.to_string()).await,
     "count is now 3"
   );
   assert_eq!(
-    c.handle(&mut (), "increment", r#"{"amount": 7}"#.to_string()).await,
+    c.handle((), "increment", r#"{"amount": 7}"#.to_string()).await,
     "count is now 10"
   );
   assert_eq!(c.count, 10);
@@ -306,7 +306,7 @@ async fn readonly_toolset() {
   assert_eq!(descs.len(), 1);
   assert_eq!(descs[0].name, "read_only_tools::get_prefix");
   assert_eq!(
-    t.handle(&mut (), "get_prefix", r#"{}"#.to_string())
+    t.handle((), "get_prefix", r#"{}"#.to_string())
       .await,
     "hello"
   );
@@ -318,7 +318,7 @@ async fn readonly_handle_ref() {
     prefix: "world".to_string(),
   };
   let result = t
-    .handle(&mut (), "get_prefix", r#"{}"#.to_string())
+    .handle((), "get_prefix", r#"{}"#.to_string())
     .await;
   assert_eq!(result, "world");
 }
@@ -333,18 +333,18 @@ async fn toolset_enum_dispatch() {
   assert_eq!(ts.name(), "math_tools");
   assert_eq!(ts.tools().len(), 2);
   assert_eq!(
-    ts.handle(&mut (), "greet", r#"{"excited": true}"#.to_string()).await,
+    ts.handle((), "greet", r#"{"excited": true}"#.to_string()).await,
     "Hello, test!!!"
   );
 
   let mut ts = Counter::default().to_toolset();
   assert_eq!(ts.name(), "counter");
   assert_eq!(
-    ts.handle(&mut (), "increment", r#"{"amount": 4}"#.to_string()).await,
+    ts.handle((), "increment", r#"{"amount": 4}"#.to_string()).await,
     "count is now 4"
   );
   assert_eq!(
-    ts.handle(&mut (), "increment", r#"{"amount": 2}"#.to_string()).await,
+    ts.handle((), "increment", r#"{"amount": 2}"#.to_string()).await,
     "count is now 6"
   );
 }
@@ -358,13 +358,13 @@ async fn ctx_toolset() {
   assert_eq!(descs[0].name, "ctx_tools::get_user_id");
   assert_eq!(descs[1].name, "ctx_tools::greet_user");
 
-  let mut ctx = AppCtx { owner: "bob", user_id: 42 };
+  let ctx = AppCtx { owner: "bob", user_id: 42 };
   assert_eq!(
-    t.handle(&mut ctx, "get_user_id", r#"{}"#.to_string()).await,
+    t.handle(ctx.clone(), "get_user_id", r#"{}"#.to_string()).await,
     "42"
   );
   assert_eq!(
-    t.handle(&mut ctx, "greet_user", r#"{ "name": "alice" }"#.to_string()).await,
+    t.handle(ctx.clone(), "greet_user", r#"{ "name": "alice" }"#.to_string()).await,
     "user bob says hi alice"
   );
 }
@@ -372,10 +372,10 @@ async fn ctx_toolset() {
 #[tokio::test]
 async fn ctx_toolset_to_toolset() {
   let mut ts = CtxTools.to_toolset();
-  let mut ctx = AppCtx { owner: "test", user_id: 99 };
+  let ctx = AppCtx { owner: "test", user_id: 99 };
   assert_eq!(ts.name(), "ctx_tools");
   assert_eq!(
-    ts.handle(&mut ctx, "get_user_id", r#"{}"#.to_string()).await,
+    ts.handle(ctx, "get_user_id", r#"{}"#.to_string()).await,
     "99"
   );
 }

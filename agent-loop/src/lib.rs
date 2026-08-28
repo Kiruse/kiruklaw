@@ -8,4 +8,4 @@ pub use kiruklaw_macros::{self as macros, tool, toolset};
 
 pub use error::Error as AgentLoopError;
 pub use types::*;
-pub use prompt::{AgentLoop, prompt};
+pub use prompt::{AgentLoop, ContextProvider, prompt};

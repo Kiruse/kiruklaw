@@ -6,8 +6,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKi
 use ratatui::prelude::*;
 
 use kiruklaw_agent_loop::{
-  AgentLoop, AgentMessageChunk, Conversation, ConversationMessage,
-  FinishReason,
+  AgentLoop, AgentMessageChunk, ContextProvider, Conversation, ConversationMessage, FinishReason,
 };
 
 use crate::commands::{self, Command, compute_completions};
@@ -497,7 +496,7 @@ impl App {
       match rt {
         Ok(rt) => rt.block_on(async move {
           let mut agent_loop = AgentLoop::new(model_config);
-          let _ = agent_loop.run(&mut (), &mut conversation, stream_tx).await;
+          let _ = agent_loop.run(ContextProvider::Owned(()), &mut conversation, stream_tx).await;
           let _ = done_tx.send(conversation).await;
         }),
         Err(_) => {

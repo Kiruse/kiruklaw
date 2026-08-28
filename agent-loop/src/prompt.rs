@@ -10,7 +10,16 @@ use tokio::time::Instant;
 use crate::{AgentMessageChunk, AgentToolDescriptor, AgentUsage, Conversation, ConversationMessage, FinishReason, Loggable, ModelConfig, OpenAiChatCompletionChunk, OpenAiChatCompletionRequest, OpenAiMessage, OpenAiStreamOptions, ToolCall, Toolset};
 use crate::error::Error;
 
-pub struct AgentLoop<C = ()> {
+/// Agentic loop configuration.
+///
+/// [AgentLoop::run] receives a `ctx: C` argument that must be cloneable.
+/// Every immutable borrow is cloneable. Mutable borrows are not, and are
+/// deliberately not supported in order to enable parallel tool execution
+/// in a future update. If you must share state between tools, prefer to
+/// use [tokio::sync::RwLock].
+///
+/// **Note** that [AgentLoop::subagents] is currently an unused placeholder.
+pub struct AgentLoop<C: Clone = ()> {
   pub max_steps: u8,
   pub model: ModelConfig,
   pub persona: Option<String>,
@@ -19,7 +28,7 @@ pub struct AgentLoop<C = ()> {
   pub subagents: HashMap<String, AgentLoop<C>>,
 }
 
-impl<C> AgentLoop<C> {
+impl<C: Clone> AgentLoop<C> {
   pub fn new(model: ModelConfig) -> Self {
     Self {
       model,
@@ -59,7 +68,7 @@ impl<C> AgentLoop<C> {
 
   pub async fn run(
     &mut self,
-    ctx: &mut C,
+    ctx: ContextProvider<'_, C>,
     conversation: &mut Conversation,
     sender: Sender<AgentMessageChunk>,
   ) -> Result<AgentLoopResponse, Error> {
@@ -95,7 +104,11 @@ impl<C> AgentLoop<C> {
         let ts_name = tc.name.split("::").next().unwrap_or(&tc.name);
         let response = match self.tools.get_mut(ts_name) {
           Some(ts) => {
-            let res = ts.handle(ctx, &tc.name, tc.arguments).await;
+            let res = ts.handle(
+              ctx.ctx(ts, &tc.name).map_err(|e| Error::External(format!("{e}")))?,
+              &tc.name,
+              tc.arguments,
+            ).await;
             trace!("Agent called tool {} with result: {}", tc.name, res);
             res
           }
@@ -118,7 +131,7 @@ impl<C> AgentLoop<C> {
   }
 }
 
-impl<C> Default for AgentLoop<C> {
+impl<C: Clone> Default for AgentLoop<C> {
   fn default() -> Self {
     Self {
       max_steps: 20,
@@ -287,4 +300,27 @@ pub async fn prompt(
   usage.total_duration_ms = start.elapsed().as_millis() as u64;
 
   Ok((ConversationMessage::assistant(content_acc, tool_calls_acc), usage))
+}
+
+/// Provides context to [AgentLoop::run] invokations.
+pub enum ContextProvider<'a, C: Clone> {
+  Owned(C),
+  Factory(Box<dyn Fn(&Toolset<C>, &str) -> Result<C, anyhow::Error> + 'a>),
+}
+
+impl<'a, C: Clone> ContextProvider<'a, C> {
+  pub fn owned(ctx: C) -> Self {
+    Self::Owned(ctx)
+  }
+
+  pub fn factory(cb: impl Fn(&Toolset<C>, &str) -> Result<C, anyhow::Error> + 'a) -> Self {
+    Self::Factory(Box::new(cb))
+  }
+
+  fn ctx(&self, toolset: &Toolset<C>, tool: &str) -> Result<C, anyhow::Error> {
+    match self {
+      Self::Owned(ctx) => Ok(ctx.clone()),
+      Self::Factory(cb) => cb(toolset, tool),
+    }
+  }
 }

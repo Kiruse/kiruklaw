@@ -947,6 +947,7 @@ dependencies = [
 name = "kiruklaw-agent-loop"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "futures-util",
  "kiruklaw-macros",
  "log",
