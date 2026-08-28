@@ -16,7 +16,7 @@ pub struct AgentLoop<C = ()> {
   pub persona: Option<String>,
   pub tools: HashMap<String, Toolset<C>>,
   /// Subagents that this agent may invoke. PLACEHOLDER.
-  pub subagents: HashMap<String, AgentLoop>,
+  pub subagents: HashMap<String, AgentLoop<C>>,
 }
 
 impl<C> AgentLoop<C> {
@@ -50,7 +50,7 @@ impl<C> AgentLoop<C> {
     }
   }
 
-  pub fn with_subagents(self, subagents: impl Iterator<Item = (String, AgentLoop)>) -> Self {
+  pub fn with_subagents(self, subagents: impl Iterator<Item = (String, AgentLoop<C>)>) -> Self {
     Self {
       subagents: subagents.collect(),
       ..self
