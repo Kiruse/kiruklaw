@@ -37,6 +37,14 @@ impl Casing {
     }
   }
 
+  pub fn separator(&self) -> &'static str {
+    match self {
+      Self::Camel | Self::Pascal => "",
+      Self::Kebab => "-",
+      Self::Snake => "_",
+    }
+  }
+
   pub fn as_str(&self) -> &'static str {
     match self {
       Self::Camel => "camel",

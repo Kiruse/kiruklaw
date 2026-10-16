@@ -1,0 +1,5 @@
+error: toolset name `story_widget` does not end with `_module`
+ --> tests/ui/strip_mismatch.rs:3:43
+  |
+3 | #[kiruklaw_macros::toolset(strip_suffix = "module")]
+  |                                           ^^^^^^^^

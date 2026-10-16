@@ -11,21 +11,43 @@ use syn::{
 
 struct ToolsetAttrs {
   casing: Casing,
+  strip_prefix: Option<(String, Span)>,
+  strip_suffix: Option<(String, Span)>,
 }
 
 impl syn::parse::Parse for ToolsetAttrs {
   fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
     let mut casing = None;
+    let mut strip_prefix = None;
+    let mut strip_suffix = None;
     while !input.is_empty() {
       let ident: Ident = input.parse()?;
-      if ident == "casing" {
-        input.parse::<syn::Token![=]>()?;
-        let lit: LitStr = input.parse()?;
-        casing = Some(
-          Casing::from_str(&lit.value()).map_err(|e| syn::Error::new(lit.span(), e))?,
-        );
-      } else {
-        return Err(syn::Error::new(ident.span(), "expected `casing`"));
+      match ident.to_string().as_str() {
+        "casing" => {
+          input.parse::<syn::Token![=]>()?;
+          let lit: LitStr = input.parse()?;
+          casing = Some(
+            Casing::from_str(&lit.value()).map_err(|e| syn::Error::new(lit.span(), e))?,
+          );
+        }
+        "strip_prefix" | "strip_suffix" => {
+          input.parse::<syn::Token![=]>()?;
+          let lit: LitStr = input.parse()?;
+          let value = (lit.value(), lit.span());
+          if ident == "strip_prefix" {
+            strip_prefix = Some(value);
+          } else {
+            strip_suffix = Some(value);
+          }
+        }
+        other => {
+          return Err(syn::Error::new(
+            ident.span(),
+            format!(
+              "expected `casing`, `strip_prefix`, or `strip_suffix`, found `{other}`"
+            ),
+          ));
+        }
       }
       if input.is_empty() {
         break;
@@ -34,6 +56,8 @@ impl syn::parse::Parse for ToolsetAttrs {
     }
     Ok(ToolsetAttrs {
       casing: casing.unwrap_or(Casing::Snake),
+      strip_prefix,
+      strip_suffix,
     })
   }
 }
@@ -41,7 +65,11 @@ impl syn::parse::Parse for ToolsetAttrs {
 pub(crate) fn toolset(attr: TokenStream, item: TokenStream) -> TokenStream {
   let impl_block = parse_macro_input!(item as ItemImpl);
 
-  let ToolsetAttrs { casing } = match syn::parse(attr) {
+  let ToolsetAttrs {
+    casing,
+    strip_prefix,
+    strip_suffix,
+  } = match syn::parse(attr) {
     Ok(a) => a,
     Err(e) => return e.to_compile_error().into(),
   };
@@ -60,7 +88,16 @@ pub(crate) fn toolset(attr: TokenStream, item: TokenStream) -> TokenStream {
 
   let self_ty = &impl_block.self_ty;
   let struct_name = struct_ident.to_string();
-  let namespace = casing.recase(&struct_name);
+  let namespace = match apply_strips(
+    casing.recase(&struct_name),
+    &casing,
+    strip_prefix,
+    strip_suffix,
+    &struct_name,
+  ) {
+    Ok(n) => n,
+    Err(e) => return e.to_compile_error().into(),
+  };
 
   let InspectImplResult {
     readonly,
@@ -284,6 +321,57 @@ pub(crate) fn toolset(attr: TokenStream, item: TokenStream) -> TokenStream {
       }
     }.into()
   }
+}
+
+fn apply_strips(
+  mut namespace: String,
+  casing: &Casing,
+  strip_prefix: Option<(String, Span)>,
+  strip_suffix: Option<(String, Span)>,
+  struct_name: &str,
+) -> Result<String, syn::Error> {
+  let sep = casing.separator();
+  if let Some((prefix, span)) = strip_prefix {
+    let pattern = format!("{}{}", casing.recase(&prefix), sep);
+    namespace = match namespace.strip_prefix(&pattern) {
+      Some(rest) if !rest.is_empty() => rest.to_string(),
+      Some(_) => {
+        return Err(syn::Error::new(
+          span,
+          format!(
+            "stripping prefix `{pattern}` from `{struct_name}` would produce an empty toolset name"
+          ),
+        ));
+      }
+      None => {
+        return Err(syn::Error::new(
+          span,
+          format!("toolset name `{namespace}` does not start with `{pattern}`"),
+        ));
+      }
+    };
+  }
+  if let Some((suffix, span)) = strip_suffix {
+    let pattern = format!("{}{}", sep, casing.recase(&suffix));
+    namespace = match namespace.strip_suffix(&pattern) {
+      Some(rest) if !rest.is_empty() => rest.to_string(),
+      Some(_) => {
+        return Err(syn::Error::new(
+          span,
+          format!(
+            "stripping suffix `{pattern}` from `{struct_name}` would produce an empty toolset name"
+          ),
+        ));
+      }
+      None => {
+        return Err(syn::Error::new(
+          span,
+          format!("toolset name `{namespace}` does not end with `{pattern}`"),
+        ));
+      }
+    };
+  }
+  Ok(namespace)
 }
 
 fn extract_doc_lines(attrs: &[Attribute]) -> Vec<String> {

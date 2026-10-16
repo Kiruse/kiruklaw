@@ -379,3 +379,54 @@ async fn ctx_toolset_to_toolset() {
     "99"
   );
 }
+
+#[tokio::test]
+async fn strip_suffix_attribute() {
+  #[derive(Clone, Default)]
+  struct MemoryModule;
+  #[toolset(strip_suffix = "module")]
+  impl MemoryModule {
+    /// Recalls a memory.
+    async fn recall(&self) -> Result<String, anyhow::Error> {
+      Ok("recalled".to_string())
+    }
+  }
+  let t = MemoryModule;
+  assert_eq!(t.name(), "memory");
+  assert_eq!(t.tools()[0].name, "memory::recall");
+  assert_eq!(t.handle((), "recall", r#"{}"#.to_string()).await, "recalled");
+}
+
+#[tokio::test]
+async fn strip_prefix_attribute() {
+  #[derive(Clone, Default)]
+  struct ToolsMemory;
+  #[toolset(strip_prefix = "tools")]
+  impl ToolsMemory {
+    /// Lists memories.
+    async fn list(&self) -> Result<String, anyhow::Error> {
+      Ok("listed".to_string())
+    }
+  }
+  let t = ToolsMemory;
+  assert_eq!(t.name(), "memory");
+  assert_eq!(t.tools()[0].name, "memory::list");
+  assert_eq!(t.handle((), "list", r#"{}"#.to_string()).await, "listed");
+}
+
+#[tokio::test]
+async fn strip_prefix_and_suffix_with_casing() {
+  #[derive(Clone, Default)]
+  struct ToolsMemoryModule;
+  #[toolset(casing = "kebab", strip_prefix = "tools", strip_suffix = "module")]
+  impl ToolsMemoryModule {
+    /// Recalls a memory.
+    async fn recall(&self) -> Result<String, anyhow::Error> {
+      Ok("recalled".to_string())
+    }
+  }
+  let t = ToolsMemoryModule;
+  assert_eq!(t.name(), "memory");
+  assert_eq!(t.tools()[0].name, "memory::recall");
+  assert_eq!(t.handle((), "recall", r#"{}"#.to_string()).await, "recalled");
+}

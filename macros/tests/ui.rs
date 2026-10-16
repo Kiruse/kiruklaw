@@ -4,4 +4,5 @@ fn ui() {
   t.compile_fail("tests/ui/self_receiver.rs");
   t.compile_fail("tests/ui/readonly_mut_self.rs");
   t.compile_fail("tests/ui/unsupported_type.rs");
+  t.compile_fail("tests/ui/strip_mismatch.rs");
 }
