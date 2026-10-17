@@ -193,6 +193,7 @@ async fn no_args() {
   }
   let p = Pinger;
   assert_eq!(p.name(), "pinger");
+  assert_eq!(Pinger::ID, "pinger");
   let descs = p.tools();
   assert_eq!(descs.len(), 1);
   assert_eq!(descs[0].name, "pinger::ping");
@@ -353,6 +354,7 @@ async fn toolset_enum_dispatch() {
 async fn ctx_toolset() {
   let t = CtxTools;
   assert_eq!(t.name(), "ctx_tools");
+  assert_eq!(CtxTools::ID, "ctx_tools");
   let descs = t.tools();
   assert_eq!(descs.len(), 2);
   assert_eq!(descs[0].name, "ctx_tools::get_user_id");
@@ -393,6 +395,7 @@ async fn strip_suffix_attribute() {
   }
   let t = MemoryModule;
   assert_eq!(t.name(), "memory");
+  assert_eq!(MemoryModule::ID, "memory");
   assert_eq!(t.tools()[0].name, "memory::recall");
   assert_eq!(t.handle((), "recall", r#"{}"#.to_string()).await, "recalled");
 }
@@ -410,6 +413,7 @@ async fn strip_prefix_attribute() {
   }
   let t = ToolsMemory;
   assert_eq!(t.name(), "memory");
+  assert_eq!(ToolsMemory::ID, "memory");
   assert_eq!(t.tools()[0].name, "memory::list");
   assert_eq!(t.handle((), "list", r#"{}"#.to_string()).await, "listed");
 }
@@ -427,6 +431,7 @@ async fn strip_prefix_and_suffix_with_casing() {
   }
   let t = ToolsMemoryModule;
   assert_eq!(t.name(), "memory");
+  assert_eq!(ToolsMemoryModule::ID, "memory");
   assert_eq!(t.tools()[0].name, "memory::recall");
   assert_eq!(t.handle((), "recall", r#"{}"#.to_string()).await, "recalled");
 }

@@ -292,6 +292,12 @@ pub(crate) fn toolset(attr: TokenStream, item: TokenStream) -> TokenStream {
       impl #impl_generics #self_ty #where_clause {
         #(#impl_items)*
 
+        pub const ID: &'static str = #namespace;
+
+        pub fn id() -> String {
+          Self::ID.to_string()
+        }
+
         pub fn to_toolset(self) -> ::kiruklaw_agent_loop::tools::Toolset<#ctx_path> {
           #toolset_enum_variant(::std::boxed::Box::new(self))
         }
@@ -309,6 +315,12 @@ pub(crate) fn toolset(attr: TokenStream, item: TokenStream) -> TokenStream {
       #impl_block
 
       impl #self_ty {
+        pub const ID: &'static str = #namespace;
+
+        pub fn id() -> String {
+          Self::ID.to_string()
+        }
+
         pub fn to_toolset(self) -> ::kiruklaw_agent_loop::tools::Toolset<()> {
           ::kiruklaw_agent_loop::tools::Toolset::Immutable(::std::boxed::Box::new(self))
         }
