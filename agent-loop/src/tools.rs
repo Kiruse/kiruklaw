@@ -82,7 +82,7 @@ impl AgentToolDescriptor {
           let mut val = Map::new();
           arg.ty.apply(&mut val);
           if let Some(desc) = &arg.description {
-            val["description"] = Value::String(desc.clone());
+            val.insert("description".to_string(), Value::String(desc.clone()));
           }
           (arg.name.clone(), json!(val))
         })
@@ -156,11 +156,11 @@ impl AgentToolArgType {
   pub fn apply(&self, value: &mut Map<String, Value>) {
     match self {
       Self::Primitive(ty) => {
-        value["type"] = ty.to_schema();
+        value.insert("type".to_string(), ty.to_schema());
       }
       Self::Enum(ty) => {
-        value["type"] = json!(ty.type_string());
-        value["enum"] = ty.to_schema();
+        value.insert("type".to_string(), json!(ty.type_string()));
+        value.insert("enum".to_string(), ty.to_schema());
       }
     }
   }
@@ -170,11 +170,11 @@ impl AgentToolArgType {
 pub struct AgentToolArgPrimitive(pub u8);
 
 impl AgentToolArgPrimitive {
-  pub const NULL: Self = Self(1);
-  pub const STRING: Self = Self(2);
-  pub const NUMBER: Self = Self(3);
-  pub const INT: Self = Self(4);
-  pub const BOOL: Self = Self(5);
+  pub const NULL: Self = Self(1 << 0);
+  pub const STRING: Self = Self(1 << 1);
+  pub const NUMBER: Self = Self(1 << 2);
+  pub const INT: Self = Self(1 << 3);
+  pub const BOOL: Self = Self(1 << 4);
 
   #[inline(always)]
   pub fn new() -> Self {
@@ -183,27 +183,27 @@ impl AgentToolArgPrimitive {
 
   #[inline(always)]
   pub fn nullable(self) -> Self {
-    Self(self.0 | 1)
+    Self(self.0 | Self::NULL.0)
   }
 
   #[inline(always)]
   pub fn with_string(self) -> Self {
-    Self(self.0 | 2)
+    Self(self.0 | Self::STRING.0)
   }
 
   #[inline(always)]
   pub fn with_number(self) -> Self {
-    Self(self.0 | 3)
+    Self(self.0 | Self::NUMBER.0)
   }
 
   #[inline(always)]
   pub fn with_integer(self) -> Self {
-    Self(self.0 | 4)
+    Self(self.0 | Self::INT.0)
   }
 
   #[inline(always)]
   pub fn with_boolean(self) -> Self {
-    Self(self.0 | 5)
+    Self(self.0 | Self::BOOL.0)
   }
 
   #[inline(always)]
@@ -292,5 +292,56 @@ impl AgentToolArgEnum {
 impl Into<AgentToolArgType> for AgentToolArgEnum {
   fn into(self) -> AgentToolArgType {
     AgentToolArgType::Enum(self)
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  /// Apply an arg type to a fresh map, as schema building does.
+  fn prop(ty: AgentToolArgType) -> Value {
+    let mut map = Map::new();
+    ty.apply(&mut map);
+    Value::Object(map)
+  }
+
+  /// The primitive bitflags were not powers of two, so `to_schema` matched
+  /// overlapping kinds and emitted wrong types (`string` → `number`, unions
+  /// for `number`/`bool`).
+  #[test]
+  fn primitive_schemas_are_accurate() {
+    assert_eq!(prop(AgentToolArgPrimitive::STRING.into())["type"], "string");
+    assert_eq!(prop(AgentToolArgPrimitive::INT.into())["type"], "integer");
+    assert_eq!(prop(AgentToolArgPrimitive::NUMBER.into())["type"], "number");
+    assert_eq!(prop(AgentToolArgPrimitive::BOOL.into())["type"], "boolean");
+    assert_eq!(prop(AgentToolArgPrimitive::STRING.nullable().into())["type"], json!(["null", "string"]));
+  }
+
+  /// Regression: serde_json >= 1.0.151 changed `Map`'s `IndexMut` to panic
+  /// on missing keys instead of inserting a null, which made schema
+  /// building panic on fresh maps.
+  #[test]
+  fn schema_builds_with_fresh_maps() {
+    let desc = AgentToolDescriptor::new(
+      "ns::tool",
+      "does a thing",
+      vec![
+        AgentToolArg::new("plain", AgentToolArgType::Primitive(AgentToolArgPrimitive::STRING))
+          .with_description("a string arg".to_string()),
+        AgentToolArg::new("choice", AgentToolArgType::Enum(AgentToolArgEnum::string(vec!["a".to_string(), "b".to_string()]))),
+      ],
+    );
+
+    let schema = desc.to_schema();
+    assert_eq!(schema["function"]["name"], "ns::tool");
+    assert_eq!(schema["function"]["parameters"]["properties"]["plain"]["type"], "string");
+    assert_eq!(schema["function"]["parameters"]["properties"]["plain"]["description"], "a string arg");
+    assert_eq!(schema["function"]["parameters"]["properties"]["choice"]["type"], "string");
+    assert_eq!(
+      schema["function"]["parameters"]["properties"]["choice"]["enum"],
+      json!(["a", "b"])
+    );
+    assert_eq!(schema["function"]["parameters"]["required"], json!([]));
   }
 }
