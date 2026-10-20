@@ -117,22 +117,47 @@ fn deserialize_empty_string<'de, D>(deserializer: D) -> Result<Option<String>, D
 where
   D: serde::Deserializer<'de>,
 {
-  let s: String = Deserialize::deserialize(deserializer)?;
-  if s.is_empty() {
-    Ok(None)
-  } else {
-    Ok(Some(s))
-  }
+  // Server streams routinely contain explicit nulls ("content": null on
+  // role-only & tool-call deltas) — a plain `String` deserialize would
+  // reject the whole chunk.
+  let s: Option<String> = Option::deserialize(deserializer)?;
+  Ok(s.filter(|s| !s.is_empty()))
 }
 
 fn deserialize_finish_reason<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
 where
   D: serde::Deserializer<'de>,
 {
-  let s: String = Deserialize::deserialize(deserializer)?;
-  if s == "null" || s.is_empty() {
-    Ok(None)
-  } else {
-    Ok(Some(s))
+  // "finish_reason": null is sent with every non-final chunk.
+  let s: Option<String> = Option::deserialize(deserializer)?;
+  Ok(s.filter(|s| !s.is_empty() && s != "null"))
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  /// Regression: streaming chunks carry explicit nulls ("finish_reason":
+  /// null on every non-final chunk, "content": null on role-only deltas).
+  /// The custom string deserializers previously rejected nulls, so every
+  /// content chunk failed to parse and responses came back empty.
+  #[test]
+  fn chunks_parse_with_null_fields() {
+    let chunk: OpenAiChatCompletionChunk = serde_json::from_str(
+      r#"{"choices":[{"index":0,"delta":{"role":"assistant","content":null},"finish_reason":null}]}"#,
+    ).unwrap();
+    assert_eq!(chunk.choices[0].delta.content, None);
+    assert_eq!(chunk.choices[0].finish_reason, None);
+
+    let chunk: OpenAiChatCompletionChunk = serde_json::from_str(
+      r#"{"choices":[{"index":0,"delta":{"content":"Hello "},"finish_reason":null}]}"#,
+    ).unwrap();
+    assert_eq!(chunk.choices[0].delta.content.as_deref(), Some("Hello "));
+
+    let chunk: OpenAiChatCompletionChunk = serde_json::from_str(
+      r#"{"choices":[{"index":0,"delta":{"content":null},"finish_reason":"stop"}]}"#,
+    ).unwrap();
+    assert_eq!(chunk.choices[0].delta.content, None);
+    assert_eq!(chunk.choices[0].finish_reason.as_deref(), Some("stop"));
   }
 }
