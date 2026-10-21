@@ -101,12 +101,17 @@ impl<C: Clone> AgentLoop<C> {
       }
 
       for tc in tool_calls {
-        let ts_name = tc.name.split("::").next().unwrap_or(&tc.name);
+        // Tool names are namespaced `<toolset>::<tool>`; the toolset's own
+        // `handle` expects the bare tool name (see the trait contract).
+        let (ts_name, bare_name) = match tc.name.split_once("::") {
+          Some((ts_name, bare_name)) => (ts_name, bare_name),
+          None => (tc.name.as_str(), tc.name.as_str()),
+        };
         let response = match self.tools.get_mut(ts_name) {
           Some(ts) => {
             let res = ts.handle(
               ctx.ctx(ts, &tc.name).map_err(|e| Error::External(format!("{e}")))?,
-              &tc.name,
+              bare_name,
               tc.arguments,
             ).await;
             trace!("Agent called tool {} with result: {}", tc.name, res);
@@ -322,5 +327,101 @@ impl<'a, C: Clone> ContextProvider<'a, C> {
       Self::Owned(ctx) => Ok(ctx.clone()),
       Self::Factory(cb) => cb(toolset, tool),
     }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::{toolset, AgentToolset};
+  use std::sync::{Arc, Mutex};
+
+  #[derive(Default)]
+  struct Probe {
+    recorded: Arc<Mutex<Vec<String>>>,
+  }
+
+  #[toolset]
+  impl AgentToolset<()> for Probe {
+    /// Records the given value.
+    /// @value Any value to record.
+    async fn record(&self, _ctx: (), value: String) -> Result<String, anyhow::Error> {
+      self.recorded.lock().unwrap().push(value);
+      Ok("recorded".to_string())
+    }
+  }
+
+  /// Serve the given SSE bodies, one per incoming connection, in order.
+  async fn serve_sse(bodies: Vec<String>) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let bodies = Arc::new(Mutex::new(bodies.into_iter()));
+    tokio::spawn(async move {
+      loop {
+        let Some(body) = bodies.lock().unwrap().next() else { break };
+        let (mut sock, _) = listener.accept().await.unwrap();
+        let mut buf = vec![0u8; 8192];
+        loop {
+          let n = sock.read(&mut buf).await.unwrap();
+          assert!(n > 0, "client closed before sending a request");
+          if buf[..n].windows(4).any(|window| window == b"\r\n\r\n") {
+            break;
+          }
+        }
+        let response = format!(
+          "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+          body.len(),
+          body,
+        );
+        sock.write_all(response.as_bytes()).await.unwrap();
+      }
+    });
+    format!("http://127.0.0.1:{port}/v1")
+  }
+
+  /// Regression: `AgentLoop::run` dispatched the full namespaced tool name
+  /// (`probe::record`) into the toolset's `handle`, whose arms match bare
+  /// tool names only — every tool call came back "Error: unknown tool".
+  #[tokio::test]
+  async fn run_dispatches_namespaced_tool_calls() {
+    let tool_call_body = concat!(
+      "data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":null,",
+      "\"tool_calls\":[{\"index\":0,\"id\":\"t1\",\"type\":\"function\",\"function\":",
+      "{\"name\":\"probe::record\",\"arguments\":\"{\\\"value\\\":\\\"hello\\\"}\"}}]},",
+      "\"finish_reason\":null}]}\n\n",
+      "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+      "data: [DONE]\n\n",
+    );
+    let final_body = concat!(
+      "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"done\"},\"finish_reason\":null}]}\n\n",
+      "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+      "data: [DONE]\n\n",
+    );
+    let base_url = serve_sse(vec![tool_call_body.to_string(), final_body.to_string()]).await;
+
+    let probe = Probe::default();
+    let recorded = probe.recorded.clone();
+    let mut agent_loop = AgentLoop::new(ModelConfig::OpenAi {
+      base_url,
+      api_key: String::new(),
+      model: "test".to_string(),
+    })
+    .with_toolsets([Toolset::Immutable(Box::new(probe))].into_iter());
+
+    let mut conversation = Conversation::default();
+    conversation.push(ConversationMessage::user("record hello".to_string()));
+    let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+    let drainer = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+
+    agent_loop
+      .run(ContextProvider::owned(()), &mut conversation, tx)
+      .await
+      .unwrap();
+    drainer.abort();
+
+    assert_eq!(recorded.lock().unwrap().as_slice(), ["hello".to_string()]);
+    // user → assistant(tool call) → tool result → assistant(final)
+    assert_eq!(conversation.messages.len(), 4);
   }
 }
