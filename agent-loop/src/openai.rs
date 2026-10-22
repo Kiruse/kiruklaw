@@ -44,11 +44,25 @@ pub struct OpenAiChatCompletionRequest {
   pub stream_options: Option<OpenAiStreamOptions>,
   #[serde(skip_serializing_if = "Option::is_none")]
   pub tools: Option<Vec<Value>>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub reasoning: Option<OpenAiReasoningConfig>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct OpenAiStreamOptions {
   pub include_usage: bool,
+}
+
+/// Unified reasoning configuration (OpenRouter-style; OpenAI-compatible
+/// servers without reasoning support ignore it).
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct OpenAiReasoningConfig {
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub effort: Option<String>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub max_tokens: Option<u32>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub exclude: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

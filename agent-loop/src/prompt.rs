@@ -7,7 +7,7 @@ use log::{info, trace, warn};
 use tokio::sync::mpsc::Sender;
 use tokio::time::Instant;
 
-use crate::{AgentMessageChunk, AgentToolDescriptor, AgentUsage, Conversation, ConversationMessage, FinishReason, Loggable, ModelConfig, OpenAiChatCompletionChunk, OpenAiChatCompletionRequest, OpenAiMessage, OpenAiRole, OpenAiStreamOptions, ToolCall, Toolset};
+use crate::{AgentMessageChunk, AgentToolDescriptor, AgentUsage, Conversation, ConversationMessage, FinishReason, Loggable, ModelConfig, OpenAiChatCompletionChunk, OpenAiChatCompletionRequest, OpenAiMessage, OpenAiReasoningConfig, OpenAiRole, OpenAiStreamOptions, ToolCall, Toolset};
 use crate::error::Error;
 
 /// Agentic loop configuration.
@@ -27,6 +27,9 @@ pub struct AgentLoop<C: Clone = ()> {
   /// so each request only carries the current round's tool traffic.
   /// The full history is still kept in the [Conversation].
   pub hide_tool_history: bool,
+  /// Reasoning request configuration, forwarded to the LLM endpoint as the
+  /// unified (OpenRouter-style) `reasoning` parameter. `None` disables it.
+  pub reasoning: Option<OpenAiReasoningConfig>,
   pub tools: HashMap<String, Toolset<C>>,
   /// Subagents that this agent may invoke. PLACEHOLDER.
   pub subagents: HashMap<String, AgentLoop<C>>,
@@ -57,6 +60,13 @@ impl<C: Clone> AgentLoop<C> {
   pub fn with_hide_tool_history(self, hide_tool_history: bool) -> Self {
     Self {
       hide_tool_history,
+      ..self
+    }
+  }
+
+  pub fn with_reasoning(self, reasoning: Option<OpenAiReasoningConfig>) -> Self {
+    Self {
+      reasoning,
       ..self
     }
   }
@@ -110,6 +120,7 @@ impl<C: Clone> AgentLoop<C> {
         &self.model,
         &descriptors,
         msgs.clone(),
+        self.reasoning.clone(),
         sender.clone(),
       ).await?;
       total_usage += usage;
@@ -167,6 +178,7 @@ impl<C: Clone> Default for AgentLoop<C> {
       model: Default::default(),
       persona: None,
       hide_tool_history: false,
+      reasoning: None,
       tools: Default::default(),
       subagents: Default::default(),
     }
@@ -185,6 +197,7 @@ pub async fn prompt(
   llm: &ModelConfig,
   tools: &[AgentToolDescriptor],
   messages: Vec<OpenAiMessage>,
+  reasoning: Option<OpenAiReasoningConfig>,
   sender: Sender<AgentMessageChunk>,
 ) -> Result<(ConversationMessage, AgentUsage), Error> {
   let ModelConfig::OpenAi { base_url, api_key, model } = llm;
@@ -201,6 +214,7 @@ pub async fn prompt(
     } else {
       Some(tools.iter().map(|t| t.to_schema()).collect())
     },
+    reasoning,
   };
 
   let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
