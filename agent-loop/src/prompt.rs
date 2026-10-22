@@ -7,7 +7,7 @@ use log::{info, trace, warn};
 use tokio::sync::mpsc::Sender;
 use tokio::time::Instant;
 
-use crate::{AgentMessageChunk, AgentToolDescriptor, AgentUsage, Conversation, ConversationMessage, FinishReason, Loggable, ModelConfig, OpenAiChatCompletionChunk, OpenAiChatCompletionRequest, OpenAiMessage, OpenAiStreamOptions, ToolCall, Toolset};
+use crate::{AgentMessageChunk, AgentToolDescriptor, AgentUsage, Conversation, ConversationMessage, FinishReason, Loggable, ModelConfig, OpenAiChatCompletionChunk, OpenAiChatCompletionRequest, OpenAiMessage, OpenAiRole, OpenAiStreamOptions, ToolCall, Toolset};
 use crate::error::Error;
 
 /// Agentic loop configuration.
@@ -23,6 +23,10 @@ pub struct AgentLoop<C: Clone = ()> {
   pub max_steps: u8,
   pub model: ModelConfig,
   pub persona: Option<String>,
+  /// Hide tool calls & their results from earlier rounds in the prompt,
+  /// so each request only carries the current round's tool traffic.
+  /// The full history is still kept in the [Conversation].
+  pub hide_tool_history: bool,
   pub tools: HashMap<String, Toolset<C>>,
   /// Subagents that this agent may invoke. PLACEHOLDER.
   pub subagents: HashMap<String, AgentLoop<C>>,
@@ -50,6 +54,13 @@ impl<C: Clone> AgentLoop<C> {
     }
   }
 
+  pub fn with_hide_tool_history(self, hide_tool_history: bool) -> Self {
+    Self {
+      hide_tool_history,
+      ..self
+    }
+  }
+
   pub fn with_toolsets(self, toolsets: impl Iterator<Item = Toolset<C>>) -> Self {
     Self {
       tools: toolsets
@@ -72,7 +83,20 @@ impl<C: Clone> AgentLoop<C> {
     conversation: &mut Conversation,
     sender: Sender<AgentMessageChunk>,
   ) -> Result<AgentLoopResponse, Error> {
-    let mut msgs = conversation.as_openai_msgs();
+    let msgs = conversation.as_openai_msgs();
+    let mut msgs = if self.hide_tool_history {
+      msgs.into_iter()
+        .filter(|msg| !matches!(msg.role, OpenAiRole::Tool))
+        .map(|mut msg| {
+          if matches!(msg.role, OpenAiRole::Assistant) {
+            msg.tool_calls = None;
+          }
+          msg
+        })
+        .collect::<Vec<_>>()
+    } else {
+      msgs
+    };
 
     let descriptors: Vec<AgentToolDescriptor> = self.tools
       .values()
@@ -142,6 +166,7 @@ impl<C: Clone> Default for AgentLoop<C> {
       max_steps: 20,
       model: Default::default(),
       persona: None,
+      hide_tool_history: false,
       tools: Default::default(),
       subagents: Default::default(),
     }
@@ -353,6 +378,15 @@ mod tests {
 
   /// Serve the given SSE bodies, one per incoming connection, in order.
   async fn serve_sse(bodies: Vec<String>) -> String {
+    serve_sse_recording(bodies, None).await
+  }
+
+  /// Serve the given SSE bodies, one per incoming connection, in order.
+  /// When `recorded` is given, each request's JSON body is appended to it.
+  async fn serve_sse_recording(
+    bodies: Vec<String>,
+    recorded: Option<Arc<Mutex<Vec<String>>>>,
+  ) -> String {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -361,13 +395,34 @@ mod tests {
       loop {
         let Some(body) = bodies.lock().unwrap().next() else { break };
         let (mut sock, _) = listener.accept().await.unwrap();
+        let mut data: Vec<u8> = Vec::new();
         let mut buf = vec![0u8; 8192];
-        loop {
+        let body_start = loop {
           let n = sock.read(&mut buf).await.unwrap();
           assert!(n > 0, "client closed before sending a request");
-          if buf[..n].windows(4).any(|window| window == b"\r\n\r\n") {
-            break;
+          data.extend_from_slice(&buf[..n]);
+          let Some(head_end) = data.windows(4).position(|w| w == b"\r\n\r\n") else {
+            continue;
+          };
+          let content_length: usize = String::from_utf8_lossy(&data[..head_end])
+            .lines()
+            .find_map(|l| {
+              l.to_ascii_lowercase()
+                .strip_prefix("content-length:")?
+                .trim()
+                .parse()
+                .ok()
+            })
+            .unwrap_or(0);
+          if data.len() >= head_end + 4 + content_length {
+            break head_end + 4;
           }
+        };
+        if let Some(recorded) = &recorded {
+          recorded
+            .lock()
+            .unwrap()
+            .push(String::from_utf8_lossy(&data[body_start..]).to_string());
         }
         let response = format!(
           "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -423,5 +478,137 @@ mod tests {
     assert_eq!(recorded.lock().unwrap().as_slice(), ["hello".to_string()]);
     // user → assistant(tool call) → tool result → assistant(final)
     assert_eq!(conversation.messages.len(), 4);
+  }
+
+  /// With `hide_tool_history`, tool calls & results from before the loop
+  /// run are stripped from the prompt (assistant history keeps its text),
+  /// while all rounds of the current run remain visible.
+  #[tokio::test]
+  async fn hide_tool_history_strips_pre_run_tool_traffic() {
+    let tool_call_body = |id: &str, value: &str| {
+      let args = serde_json::json!({ "value": value }).to_string();
+      let chunk = serde_json::json!({
+        "choices": [{
+          "index": 0,
+          "delta": {
+            "role": "assistant",
+            "content": null,
+            "tool_calls": [{
+              "index": 0,
+              "id": id,
+              "type": "function",
+              "function": { "name": "probe::record", "arguments": args },
+            }],
+          },
+          "finish_reason": null,
+        }]
+      }).to_string();
+      let done = serde_json::json!({
+        "choices": [{ "index": 0, "delta": {}, "finish_reason": "tool_calls" }]
+      }).to_string();
+      format!("data: {chunk}\n\ndata: {done}\n\ndata: [DONE]\n\n")
+    };
+    let final_body = concat!(
+      "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"done\"},\"finish_reason\":null}]}\n\n",
+      "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+      "data: [DONE]\n\n",
+    );
+
+    let recorded_requests: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let base_url = serve_sse_recording(
+      vec![
+        tool_call_body("t1", "one"),
+        tool_call_body("t2", "two"),
+        final_body.to_string(),
+      ],
+      Some(recorded_requests.clone()),
+    ).await;
+
+    let probe = Probe::default();
+    let recorded = probe.recorded.clone();
+    let mut agent_loop = AgentLoop::new(ModelConfig::OpenAi {
+      base_url,
+      api_key: String::new(),
+      model: "test".to_string(),
+    })
+    .with_toolsets([Toolset::Immutable(Box::new(probe))].into_iter())
+    .with_hide_tool_history(true);
+
+    // Seed the conversation with a previous round of tool traffic that
+    // must never reach the prompt.
+    let mut conversation = Conversation::default();
+    conversation.push(ConversationMessage::user("earlier question".to_string()));
+    conversation.push(ConversationMessage::assistant(
+      "I used a tool".to_string(),
+      vec![ToolCall {
+        id: "t0".to_string(),
+        name: "probe::record".to_string(),
+        arguments: r#"{"value":"before"}"#.to_string(),
+      }],
+    ));
+    conversation.push(ConversationMessage::tool(
+      "t0".to_string(),
+      "before-run result".to_string(),
+    ));
+    conversation.push(ConversationMessage::assistant("all done earlier".to_string(), vec![]));
+    conversation.push(ConversationMessage::user("record things".to_string()));
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+    let drainer = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+
+    agent_loop
+      .run(ContextProvider::owned(()), &mut conversation, tx)
+      .await
+      .unwrap();
+    drainer.abort();
+
+    // All tool calls still execute despite the hidden history.
+    assert_eq!(
+      recorded.lock().unwrap().as_slice(),
+      ["one".to_string(), "two".to_string()],
+    );
+    // The conversation keeps the full history, including the seeded round.
+    // user → asst(t0) → tool(t0) → asst → user → asst(t1) → tool(t1)
+    //   → asst(t2) → tool(t2) → assistant(final)
+    assert_eq!(conversation.messages.len(), 10);
+
+    let requests = recorded_requests.lock().unwrap();
+    let request = |idx: usize| -> String {
+      serde_json::from_str::<serde_json::Value>(&requests[idx])
+        .unwrap()
+        .to_string()
+    };
+
+    // Pre-run tool traffic is stripped from every request.
+    for (idx, raw) in requests.iter().enumerate() {
+      let req = serde_json::from_str::<serde_json::Value>(raw)
+        .unwrap()
+        .to_string();
+      assert!(!req.contains("t0"), "request {idx} leaked pre-run tool call");
+      assert!(
+        !req.contains("before-run result"),
+        "request {idx} leaked pre-run tool result",
+      );
+    }
+
+    // Round 0: the seeded assistant text history survives the strip.
+    let req0 = request(0);
+    assert!(req0.contains("earlier question"));
+    assert!(req0.contains("I used a tool"));
+    assert!(req0.contains("all done earlier"));
+    assert!(req0.contains("record things"));
+
+    // Round 1: the run's first tool call & its result appear.
+    let req1 = request(1);
+    assert!(req1.contains("t1"));
+    assert!(req1.contains("one"));
+    assert!(!req1.contains("t2"));
+
+    // Round 2: rounds within the run accumulate.
+    let req2 = request(2);
+    assert!(req2.contains("t1"));
+    assert!(req2.contains("one"));
+    assert!(req2.contains("t2"));
+    assert!(req2.contains("two"));
   }
 }
