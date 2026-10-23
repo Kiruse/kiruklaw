@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 use std::collections::HashMap;
 use std::iter::Iterator;
 
@@ -201,8 +202,6 @@ pub async fn prompt(
   sender: Sender<AgentMessageChunk>,
 ) -> Result<(ConversationMessage, AgentUsage), Error> {
   let ModelConfig::OpenAi { base_url, api_key, model } = llm;
-  let start = Instant::now();
-  let client = reqwest::Client::new();
 
   let request = OpenAiChatCompletionRequest {
     model: model.clone(),
@@ -218,19 +217,52 @@ pub async fn prompt(
   };
 
   let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
-  let mut req = client.post(&url).json(&request);
-  if !api_key.is_empty() {
-    req = req.header("Authorization", format!("Bearer {}", api_key));
-  }
-  let response = req
-    .send()
-    .await?;
 
-  if !response.status().is_success() {
-    return Err(Error::status(response).await);
-  }
+  // Native reqwest streams the body via hyper. On wasm, reqwest's `stream`
+  // feature is a no-op (`bytes_stream` does not exist), so the request is
+  // issued as a raw browser `fetch` and the body's `ReadableStream` is
+  // unwrapped manually — see `fetch_stream`.
+  #[cfg(not(target_arch = "wasm32"))]
+  let mut stream = {
+    let client = reqwest::Client::new();
+    let mut req = client.post(&url).json(&request);
+    if !api_key.is_empty() {
+      req = req.header("Authorization", format!("Bearer {}", api_key));
+    }
+    let response = req
+      .send()
+      .await?;
 
-  let mut stream = response.bytes_stream();
+    if !response.status().is_success() {
+      return Err(Error::status(response).await);
+    }
+
+    response
+      .bytes_stream()
+      .map(|chunk| chunk.map(|bytes| bytes.to_vec()).map_err(Error::from))
+  };
+  #[cfg(target_arch = "wasm32")]
+  let mut stream = {
+    let body = serde_json::to_string(&request)?;
+    fetch_stream(&url, api_key, &body).await?
+  };
+  consume_sse(&mut stream, &sender).await
+}
+
+/// Consume an SSE byte stream of OpenAI chat-completion chunks, forwarding
+/// content, reasoning, tool-call and finish events to `sender`, and return
+/// the accumulated assistant message plus usage.
+///
+/// Target-independent: the transport (native reqwest vs browser fetch) is
+/// resolved by the caller, so this runs — and is tested — on all targets.
+async fn consume_sse<S>(
+  stream: &mut S,
+  sender: &Sender<AgentMessageChunk>,
+) -> Result<(ConversationMessage, AgentUsage), Error>
+where
+  S: futures_util::Stream<Item = Result<Vec<u8>, Error>> + Unpin,
+{
+  let start = Instant::now();
   let mut buffer = String::new();
   let mut done_sent = false;
   let mut content_acc = String::new();
@@ -254,9 +286,11 @@ pub async fn prompt(
 
       let data = &line[6..];
       if data == "[DONE]" {
-        sender.send(AgentMessageChunk::Done {
-          reason: FinishReason::Stop,
-        }).await.log_warn(None);
+        if !done_sent {
+          sender.send(AgentMessageChunk::Done {
+            reason: FinishReason::Stop,
+          }).await.log_warn(None);
+        }
         break 'outer;
       }
 
@@ -268,56 +302,59 @@ pub async fn prompt(
         },
       };
 
-      let choice = &parsed.choices[0];
-      let delta = &choice.delta;
+      // The terminal usage chunk (`include_usage: true`) arrives with an
+      // empty `choices` array — only look at a choice if there is one.
+      let choice = parsed.choices.first();
 
-      if let Some(content) = &delta.content {
-        content_acc.push_str(content);
-        sender.send(AgentMessageChunk::Content {
-          text: content.clone(),
-        }).await.log_warn(None);
-      }
-
-      if let Some(text) = delta.reasoning() {
-        if !text.is_empty() {
-          sender.send(AgentMessageChunk::Reasoning {
-            text: text.clone(),
+      if let Some(delta) = choice.map(|choice| &choice.delta) {
+        if let Some(content) = &delta.content {
+          content_acc.push_str(content);
+          sender.send(AgentMessageChunk::Content {
+            text: content.clone(),
           }).await.log_warn(None);
         }
-      }
 
-      for tc in &delta.tool_calls {
-        if let Some(id) = &tc.id {
-          let name = tc.function.name.clone().unwrap_or_default();
-          sender.send(AgentMessageChunk::ToolCallStart {
-            index: tc.index,
-            id: id.clone(),
-            name: name.clone(),
-          }).await.log_warn(None);
-          while tool_calls_acc.len() <= tc.index {
-            tool_calls_acc.push(Default::default());
-          }
-          tool_calls_acc[tc.index] = ToolCall {
-            id: id.clone(),
-            name: name.clone(),
-            arguments: "".to_string(),
-          };
-        }
-
-        if let Some(args) = &tc.function.arguments {
-          if tool_calls_acc.len() > tc.index {
-            tool_calls_acc[tc.index].arguments.push_str(args);
-          }
-          if !args.is_empty() {
-            sender.send(AgentMessageChunk::ToolCallArgs {
-              index: tc.index,
-              args: args.clone(),
+        if let Some(text) = delta.reasoning() {
+          if !text.is_empty() {
+            sender.send(AgentMessageChunk::Reasoning {
+              text: text.clone(),
             }).await.log_warn(None);
           }
         }
+
+        for tc in &delta.tool_calls {
+          if let Some(id) = &tc.id {
+            let name = tc.function.name.clone().unwrap_or_default();
+            sender.send(AgentMessageChunk::ToolCallStart {
+              index: tc.index,
+              id: id.clone(),
+              name: name.clone(),
+            }).await.log_warn(None);
+            while tool_calls_acc.len() <= tc.index {
+              tool_calls_acc.push(Default::default());
+            }
+            tool_calls_acc[tc.index] = ToolCall {
+              id: id.clone(),
+              name: name.clone(),
+              arguments: "".to_string(),
+            };
+          }
+
+          if let Some(args) = &tc.function.arguments {
+            if tool_calls_acc.len() > tc.index {
+              tool_calls_acc[tc.index].arguments.push_str(args);
+            }
+            if !args.is_empty() {
+              sender.send(AgentMessageChunk::ToolCallArgs {
+                index: tc.index,
+                args: args.clone(),
+              }).await.log_warn(None);
+            }
+          }
+        }
       }
 
-      if let Some(reason) = &choice.finish_reason {
+      if let Some(reason) = choice.and_then(|choice| choice.finish_reason.as_ref()) {
         if !done_sent {
           done_sent = true;
           let finish = match reason.as_str() {
@@ -369,8 +406,326 @@ impl<'a, C: Clone> ContextProvider<'a, C> {
   }
 }
 
+/// Issue the chat-completion request as a raw browser `fetch` and expose
+/// the response body's `ReadableStream` as a byte-chunk stream. reqwest's
+/// `stream` feature does not exist on wasm, so this bypasses it entirely.
+#[cfg(target_arch = "wasm32")]
+async fn fetch_stream(
+  url: &str,
+  api_key: &str,
+  body: &str,
+) -> Result<std::pin::Pin<Box<dyn futures_util::Stream<Item = Result<Vec<u8>, Error>>>>, Error> {
+  use futures_util::stream;
+  use wasm_bindgen::JsCast;
+
+  let headers = web_sys::Headers::new()
+    .map_err(|_| Error::external("failed to create fetch headers"))?;
+  headers
+    .set("Content-Type", "application/json")
+    .map_err(|_| Error::external("failed to set Content-Type"))?;
+  if !api_key.is_empty() {
+    headers
+      .set("Authorization", &format!("Bearer {}", api_key))
+      .map_err(|_| Error::external("failed to set Authorization"))?;
+  }
+
+  let init = web_sys::RequestInit::new();
+  init.set_method("POST");
+  init.set_headers(&headers.into());
+  init.set_body(&wasm_bindgen::JsValue::from_str(body));
+
+  let request = web_sys::Request::new_with_str_and_init(url, &init)
+    .map_err(|_| Error::external("failed to create fetch request"))?;
+
+  let window = web_sys::window()
+    .ok_or_else(|| Error::external("no global window object to fetch from"))?;
+  let response = wasm_bindgen_futures::JsFuture::from(window.fetch_with_request(&request))
+    .await
+    .map_err(|err| Error::external(format!("fetch failed: {err:?}")))?;
+  let response: web_sys::Response = response
+    .dyn_into()
+    .map_err(|_| Error::external("fetch did not resolve to a Response"))?;
+
+  if !response.ok() {
+    let status = response.status();
+    let text = match response.text() {
+      Ok(promise) => wasm_bindgen_futures::JsFuture::from(promise)
+        .await
+        .ok()
+        .and_then(|value| value.as_string())
+        .unwrap_or_else(|| "unknown".to_string()),
+      Err(_) => "unknown".to_string(),
+    };
+    return Err(Error::http(format!("{}: {}", status, text)));
+  }
+
+  let body_stream = response
+    .body()
+    .ok_or_else(|| Error::external("response has no body stream"))?;
+  let reader: web_sys::ReadableStreamDefaultReader = body_stream
+    .get_reader()
+    .dyn_into()
+    .map_err(|_| Error::external("failed to acquire the body stream reader"))?;
+
+  Ok(Box::pin(stream::unfold(reader, |reader| async move {
+    let chunk = wasm_bindgen_futures::JsFuture::from(reader.read()).await.ok()?;
+    let done = js_sys::Reflect::get(&chunk, &wasm_bindgen::JsValue::from_str("done"))
+      .ok()?
+      .as_bool()?;
+    if done {
+      return None;
+    }
+    let value = js_sys::Reflect::get(&chunk, &wasm_bindgen::JsValue::from_str("value")).ok()?;
+    let array = value.dyn_into::<js_sys::Uint8Array>().ok()?;
+    Some((Ok::<Vec<u8>, Error>(array.to_vec()), reader))
+  })))
+}
+
 #[cfg(test)]
 mod tests {
+  use super::*;
+
+  #[cfg(target_arch = "wasm32")]
+  use wasm_bindgen_test::wasm_bindgen_test;
+
+  /// Define a test on every target: `#[tokio::test]` on native platforms
+  /// and `#[wasm_bindgen_test]` under wasm32 (execute the suite with
+  /// `wasm-bindgen-test-runner` against Node or a browser).
+  macro_rules! cross_test {
+    ($(#[$meta:meta])* $name:ident $body:block) => {
+      #[cfg(not(target_arch = "wasm32"))]
+      $(#[$meta])*
+      #[tokio::test]
+      async fn $name() $body
+
+      #[cfg(target_arch = "wasm32")]
+      $(#[$meta])*
+      #[wasm_bindgen_test]
+      async fn $name() $body
+    };
+  }
+
+  type SseChunk = Result<Vec<u8>, Error>;
+
+  /// Feed raw byte chunks through the target-independent SSE consumer and
+  /// collect every event it emitted alongside its final result.
+  async fn consume(
+    chunks: Vec<SseChunk>,
+  ) -> (Vec<AgentMessageChunk>, Result<(ConversationMessage, AgentUsage), Error>) {
+    let mut stream = futures_util::stream::iter(chunks);
+    let (tx, mut rx) = tokio::sync::mpsc::channel(256);
+    let result = consume_sse(&mut stream, &tx).await;
+    drop(tx);
+    let mut events = Vec::new();
+    while let Some(event) = rx.recv().await {
+      events.push(event);
+    }
+    (events, result)
+  }
+
+  /// One SSE completion chunk with the given delta JSON and finish reason.
+  fn sse_chunk(delta: &str, finish: Option<&str>) -> String {
+    let finish = finish
+      .map(|reason| format!("\"{reason}\""))
+      .unwrap_or_else(|| "null".to_string());
+    format!(
+      "data: {{\"choices\":[{{\"index\":0,\"delta\":{delta},\"finish_reason\":{finish}}}]}}\n\n",
+    )
+  }
+
+  /// The terminal usage-only chunk that `include_usage: true` asks for.
+  fn sse_usage_chunk(prompt_tokens: u64, completion_tokens: u64) -> String {
+    format!(
+      "data: {{\"choices\":[],\"usage\":{{\"prompt_tokens\":{prompt_tokens},\"completion_tokens\":{completion_tokens},\"total_tokens\":{}}}}}\n\n",
+      prompt_tokens + completion_tokens,
+    )
+  }
+
+  fn reason_label(reason: &FinishReason) -> &'static str {
+    match reason {
+      FinishReason::Stop => "stop",
+      FinishReason::Length => "length",
+      FinishReason::ToolCalls => "tool_calls",
+      FinishReason::ContentFilter => "content_filter",
+    }
+  }
+
+  /// Render events as comparable labels.
+  fn event_labels(events: &[AgentMessageChunk]) -> Vec<String> {
+    events
+      .iter()
+      .map(|event| match event {
+        AgentMessageChunk::Content { text } => format!("content:{text}"),
+        AgentMessageChunk::Reasoning { text } => format!("reasoning:{text}"),
+        AgentMessageChunk::ToolCallStart { index, id, name } => {
+          format!("start:{index}:{id}:{name}")
+        },
+        AgentMessageChunk::ToolCallArgs { index, args } => format!("args:{index}:{args}"),
+        AgentMessageChunk::Done { reason } => format!("done:{}", reason_label(reason)),
+      })
+      .collect()
+  }
+
+  cross_test!(
+    /// Content, reasoning and tool-call chunks stream through as events and
+    /// accumulate onto the assistant message; the terminal usage-only chunk
+    /// (empty `choices` — regression: it used to panic on the `choices[0]`
+    /// index) is folded into the usage instead.
+    sse_streams_content_reasoning_and_usage {
+      let chunks = vec![
+        Ok(sse_chunk(r#"{"role":"assistant","content":"Hel"}"#, None).into_bytes()),
+        Ok(sse_chunk(r#"{"content":"lo"}"#, None).into_bytes()),
+        Ok(sse_chunk(r#"{"reasoning_content":"hmm"}"#, None).into_bytes()),
+        Ok(sse_usage_chunk(11, 7).into_bytes()),
+        Ok(b"data: [DONE]\n\n".to_vec()),
+      ];
+
+      let (events, result) = consume(chunks).await;
+      let (message, usage) = result.unwrap();
+      let ConversationMessage::Assistant { content, tool_calls } = message else {
+        panic!("expected an assistant message");
+      };
+
+      assert_eq!(
+        event_labels(&events),
+        ["content:Hel", "content:lo", "reasoning:hmm", "done:stop"],
+      );
+      assert_eq!(content, "Hello");
+      assert!(tool_calls.is_empty());
+      assert_eq!(usage.input_tokens, 11);
+      assert_eq!(usage.output_tokens, 7);
+    }
+  );
+
+  cross_test!(
+    /// Tool-call deltas accumulate per index across argument fragments;
+    /// empty argument strings emit no event.
+    sse_accumulates_tool_calls_by_index {
+      let chunks = vec![
+        Ok(sse_chunk(r#"{"role":"assistant","content":null,"tool_calls":[{"index":0,"id":"t0","type":"function","function":{"name":"probe::record","arguments":"{\"va"}}]}"#, None).into_bytes()),
+        Ok(sse_chunk(r#"{"tool_calls":[{"index":1,"id":"t1","type":"function","function":{"name":"other::echo","arguments":""}}]}"#, None).into_bytes()),
+        Ok(sse_chunk(r#"{"tool_calls":[{"index":0,"function":{"arguments":"lue\":\"hi\"}"}}]}"#, None).into_bytes()),
+        Ok(sse_chunk(r#"{"tool_calls":[{"index":1,"function":{"arguments":"{\"x\":1}"}}]}"#, None).into_bytes()),
+        Ok(sse_chunk("{}", Some("tool_calls")).into_bytes()),
+        Ok(b"data: [DONE]\n\n".to_vec()),
+      ];
+
+      let (events, result) = consume(chunks).await;
+      let (message, _) = result.unwrap();
+      let ConversationMessage::Assistant { tool_calls, .. } = message else {
+        panic!("expected an assistant message");
+      };
+
+      assert_eq!(
+        event_labels(&events),
+        [
+          "start:0:t0:probe::record",
+          "args:0:{\"va",
+          "start:1:t1:other::echo",
+          "args:0:lue\":\"hi\"}",
+          "args:1:{\"x\":1}",
+          "done:tool_calls",
+        ],
+      );
+
+      assert_eq!(tool_calls.len(), 2);
+      assert_eq!(tool_calls[0].id, "t0");
+      assert_eq!(tool_calls[0].name, "probe::record");
+      assert_eq!(tool_calls[0].arguments, r#"{"value":"hi"}"#);
+      assert_eq!(tool_calls[1].id, "t1");
+      assert_eq!(tool_calls[1].name, "other::echo");
+      assert_eq!(tool_calls[1].arguments, r#"{"x":1}"#);
+    }
+  );
+
+  cross_test!(
+    /// Every documented finish reason maps onto its [FinishReason], unknown
+    /// strings fall back to Stop, and a [DONE] sentinel following a finish
+    /// reason does not duplicate the Done event.
+    sse_maps_finish_reasons {
+      for (reason, expected) in [
+        ("stop", "stop"),
+        ("length", "length"),
+        ("tool_calls", "tool_calls"),
+        ("content_filter", "content_filter"),
+        ("something_new", "stop"),
+      ] {
+        let chunks = vec![
+          Ok(sse_chunk("{}", Some(reason)).into_bytes()),
+          Ok(b"data: [DONE]\n\n".to_vec()),
+        ];
+
+        let (events, result) = consume(chunks).await;
+        result.unwrap();
+
+        assert_eq!(event_labels(&events), [format!("done:{expected}")]);
+      }
+    }
+  );
+
+  cross_test!(
+    /// Comment lines, other SSE fields and chunks with invalid JSON are
+    /// skipped without killing the stream.
+    sse_skips_noise_and_invalid_chunks {
+      let chunks = vec![Ok(concat!(
+        ": keepalive\n",
+        "event: ping\n",
+        "garbage\n",
+        "data: {not json}\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":null}]}\n",
+        "data: [DONE]\n",
+      ).as_bytes().to_vec())];
+
+      let (events, result) = consume(chunks).await;
+      result.unwrap();
+
+      assert_eq!(event_labels(&events), ["content:ok", "done:stop"]);
+    }
+  );
+
+  cross_test!(
+    /// Transport errors mid-stream surface to the caller.
+    sse_surfaces_transport_errors {
+      let chunks = vec![
+        Ok(sse_chunk(r#"{"content":"partial"}"#, None).into_bytes()),
+        Err(Error::external("connection reset")),
+      ];
+
+      let (events, result) = consume(chunks).await;
+
+      assert_eq!(event_labels(&events), ["content:partial"]);
+      assert!(matches!(result, Err(Error::External(msg)) if msg.contains("connection reset")));
+    }
+  );
+
+  cross_test!(
+    /// SSE lines split across multiple byte reads are reassembled.
+    sse_reassembles_lines_split_across_reads {
+      let body = format!(
+        "{}data: [DONE]\n\n",
+        sse_chunk(r#"{"content":"hey"}"#, None),
+      );
+      let bytes = body.into_bytes();
+      let (head, rest) = bytes.split_at(24);
+      let (middle, tail) = rest.split_at(rest.len() - 5);
+
+      let (events, result) = consume(vec![
+        Ok(head.to_vec()),
+        Ok(middle.to_vec()),
+        Ok(tail.to_vec()),
+      ]).await;
+      result.unwrap();
+
+      assert_eq!(event_labels(&events), ["content:hey", "done:stop"]);
+    }
+  );
+}
+
+/// Networking-backed tests: a throwaway TCP server stands in for the
+/// OpenAI endpoint, exercising the full native reqwest path. tokio's net
+/// stack does not exist on wasm.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod network_tests {
   use super::*;
   use crate::{toolset, AgentToolset};
   use std::sync::{Arc, Mutex};
@@ -624,5 +979,21 @@ mod tests {
     assert!(req2.contains("one"));
     assert!(req2.contains("t2"));
     assert!(req2.contains("two"));
+  }
+}
+
+/// Wasm-only tests: drive the browser-fetch transport directly. Run with
+/// `wasm-bindgen-test-runner` (Node or a browser).
+#[cfg(all(test, target_arch = "wasm32"))]
+mod wasm_tests {
+  use super::*;
+  use wasm_bindgen_test::wasm_bindgen_test;
+
+  /// The wasm cfg path issues the request through browser `fetch`; an
+  /// unreachable endpoint must surface as a transport error, not panic.
+  #[wasm_bindgen_test]
+  async fn fetch_stream_errors_on_unreachable_endpoint() {
+    let result = fetch_stream("http://127.0.0.1:1/v1/chat/completions", "", "{}").await;
+    assert!(result.is_err());
   }
 }

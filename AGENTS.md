@@ -85,3 +85,31 @@ All source code files must include an SPDX license identifier comment at the ver
 - Error handling: `anyhow::Result` in the CLI crate, custom `thiserror` types in agent-loop
 - Config path: `~/.config/kiruklaw/config.json`, respecting `XDG_CONFIG_HOME`
 - No tools are exposed to the agent from the CLI (security model)
+
+## Testing
+
+The agent-loop crate builds for native and `wasm32-unknown-unknown`; both cfg paths must compile and be tested.
+
+- Native (runs everything, including TCP-backed tests):
+
+  ```
+  cargo test -p kiruklaw-agent-loop
+  ```
+
+- Wasm compile-check (no runner needed; verifies the wasm cfg paths build):
+
+  ```
+  rustup target add wasm32-unknown-unknown   # once
+  cargo check -p kiruklaw-agent-loop --target wasm32-unknown-unknown
+  cargo test -p kiruklaw-agent-loop --target wasm32-unknown-unknown --no-run
+  ```
+
+- Wasm run (requires `cargo install wasm-bindgen-cli`):
+
+  ```
+  wasm-bindgen-test-runner --node target/wasm32-unknown-unknown/debug/deps/kiruklaw_agent_loop-*.wasm
+  ```
+
+  Drop `--node` to run in a real browser instead; the browser run is the only one where the `fetch_stream` test reaches actual `fetch` (Node has no `window`, so it errors early and still passes).
+
+Test gating in `prompt.rs`: target-independent SSE tests live in `tests` (defined once via the `cross_test!` macro, which expands to `#[tokio::test]` natively and `#[wasm_bindgen_test]` under wasm32); TCP-server tests in `network_tests` (`#[cfg(all(test, not(target_arch = "wasm32")))]`); browser-fetch tests in `wasm_tests` (`#[cfg(all(test, target_arch = "wasm32"))]`). Keep new tests in the right module so wasm builds stay compiling.
