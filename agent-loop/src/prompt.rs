@@ -116,6 +116,7 @@ impl<C: Clone> AgentLoop<C> {
 
     let mut last_step = self.max_steps;
     let mut total_usage = AgentUsage::default();
+    let mut last_step_usage = AgentUsage::default();
     for step in 0..self.max_steps {
       let (response, usage) = prompt(
         &self.model,
@@ -124,7 +125,8 @@ impl<C: Clone> AgentLoop<C> {
         self.reasoning.clone(),
         sender.clone(),
       ).await?;
-      total_usage += usage;
+      total_usage += usage.clone();
+      last_step_usage = usage;
 
       let tool_calls = response.tool_calls();
 
@@ -168,6 +170,7 @@ impl<C: Clone> AgentLoop<C> {
     Ok(AgentLoopResponse {
       steps: last_step,
       usage: total_usage,
+      last_step: last_step_usage,
     })
   }
 }
@@ -190,6 +193,10 @@ impl<C: Clone> Default for AgentLoop<C> {
 pub struct AgentLoopResponse {
   pub steps: u8,
   pub usage: AgentUsage,
+  /// Usage of the final LLM call alone. Its `input_tokens` reflect the
+  /// full prompt of the last request — i.e. how much of the model's
+  /// context window the conversation was actually filling.
+  pub last_step: AgentUsage,
 }
 
 /// Request a single prompt from the LLM endpoint. Does not handle
