@@ -6,7 +6,7 @@ use futures_util::StreamExt;
 
 use log::{info, trace, warn};
 use tokio::sync::mpsc::Sender;
-use tokio::time::Instant;
+use web_time::Instant;
 
 use crate::{AgentMessageChunk, AgentToolDescriptor, AgentUsage, Conversation, ConversationMessage, FinishReason, Loggable, ModelConfig, OpenAiChatCompletionChunk, OpenAiChatCompletionRequest, OpenAiMessage, OpenAiReasoningConfig, OpenAiRole, OpenAiStreamOptions, ToolCall, Toolset};
 use crate::error::Error;
