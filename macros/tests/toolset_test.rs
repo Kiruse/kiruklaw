@@ -94,8 +94,8 @@ async fn name_and_descriptors() {
   let descs = tools.tools();
   assert_eq!(descs.len(), 2);
   let names: Vec<String> = descs.iter().map(|d| d.name.clone()).collect();
-  assert!(names.contains(&"math_tools::add".to_string()));
-  assert!(names.contains(&"math_tools::greet".to_string()));
+  assert!(names.contains(&"math_tools--add".to_string()));
+  assert!(names.contains(&"math_tools--greet".to_string()));
 }
 
 #[tokio::test]
@@ -104,7 +104,7 @@ async fn descriptor_fields() {
   let desc = tools
     .tools()
     .into_iter()
-    .find(|d| d.name == "math_tools::add")
+    .find(|d| d.name == "math_tools--add")
     .unwrap();
   assert_eq!(desc.description, "Adds two numbers together.");
   assert_eq!(desc.args.len(), 2);
@@ -136,7 +136,7 @@ async fn handle_stateful() {
 async fn handle_parse_error() {
   let tools = MathTools::default();
   let result = tools
-    .handle((), "math_tools::add", "invalid json".to_string())
+    .handle((), "math_tools--add", "invalid json".to_string())
     .await;
   assert!(result.starts_with("Error: "));
 }
@@ -156,7 +156,7 @@ async fn optional_arg_descriptor() {
   let desc = tools
     .tools()
     .into_iter()
-    .find(|d| d.name == "math_tools::greet")
+    .find(|d| d.name == "math_tools--greet")
     .unwrap();
   assert_eq!(desc.args.len(), 1);
   assert!(!desc.args[0].required);
@@ -196,7 +196,7 @@ async fn no_args() {
   assert_eq!(Pinger::ID, "pinger");
   let descs = p.tools();
   assert_eq!(descs.len(), 1);
-  assert_eq!(descs[0].name, "pinger::ping");
+  assert_eq!(descs[0].name, "pinger--ping");
   assert!(descs[0].args.is_empty());
   assert_eq!(p.handle((), "ping", r#"{}"#.to_string()).await, "pong");
 }
@@ -220,7 +220,7 @@ async fn casing_camel() {
   }
   let ct = CamelTools;
   let descs = ct.tools();
-  assert_eq!(descs[0].name, "camelTools::multiply");
+  assert_eq!(descs[0].name, "camelTools--multiply");
   assert_eq!(descs[0].args[0].name, "firstOperand");
   assert_eq!(descs[0].args[1].name, "secondOperand");
   assert_eq!(
@@ -247,7 +247,7 @@ async fn namespace_acronym_struct() {
   }
   let t = HTTPTools;
   assert_eq!(t.name(), "http_tools");
-  assert_eq!(t.tools()[0].name, "http_tools::get");
+  assert_eq!(t.tools()[0].name, "http_tools--get");
   assert_eq!(t.handle((), "get", r#"{}"#.to_string()).await, "ok");
 }
 
@@ -264,7 +264,7 @@ async fn namespace_consecutive_acronym_struct() {
   }
   let t = XMLHTTPRequestHandler;
   assert_eq!(t.name(), "xmlhttp_request_handler");
-  assert_eq!(t.tools()[0].name, "xmlhttp_request_handler::send");
+  assert_eq!(t.tools()[0].name, "xmlhttp_request_handler--send");
 }
 
 #[tokio::test]
@@ -280,7 +280,7 @@ async fn namespace_acronym_suffix_struct() {
   }
   let t = ApiV2IOHandler;
   assert_eq!(t.name(), "api_v2io_handler");
-  assert_eq!(t.tools()[0].name, "api_v2io_handler::read");
+  assert_eq!(t.tools()[0].name, "api_v2io_handler--read");
 }
 
 #[tokio::test]
@@ -305,7 +305,7 @@ async fn readonly_toolset() {
   assert_eq!(t.name(), "read_only_tools");
   let descs = t.tools();
   assert_eq!(descs.len(), 1);
-  assert_eq!(descs[0].name, "read_only_tools::get_prefix");
+  assert_eq!(descs[0].name, "read_only_tools--get_prefix");
   assert_eq!(
     t.handle((), "get_prefix", r#"{}"#.to_string())
       .await,
@@ -357,8 +357,8 @@ async fn ctx_toolset() {
   assert_eq!(CtxTools::ID, "ctx_tools");
   let descs = t.tools();
   assert_eq!(descs.len(), 2);
-  assert_eq!(descs[0].name, "ctx_tools::get_user_id");
-  assert_eq!(descs[1].name, "ctx_tools::greet_user");
+  assert_eq!(descs[0].name, "ctx_tools--get_user_id");
+  assert_eq!(descs[1].name, "ctx_tools--greet_user");
 
   let ctx = AppCtx { owner: "bob", user_id: 42 };
   assert_eq!(
@@ -396,7 +396,7 @@ async fn strip_suffix_attribute() {
   let t = MemoryModule;
   assert_eq!(t.name(), "memory");
   assert_eq!(MemoryModule::ID, "memory");
-  assert_eq!(t.tools()[0].name, "memory::recall");
+  assert_eq!(t.tools()[0].name, "memory--recall");
   assert_eq!(t.handle((), "recall", r#"{}"#.to_string()).await, "recalled");
 }
 
@@ -414,7 +414,7 @@ async fn strip_prefix_attribute() {
   let t = ToolsMemory;
   assert_eq!(t.name(), "memory");
   assert_eq!(ToolsMemory::ID, "memory");
-  assert_eq!(t.tools()[0].name, "memory::list");
+  assert_eq!(t.tools()[0].name, "memory--list");
   assert_eq!(t.handle((), "list", r#"{}"#.to_string()).await, "listed");
 }
 
@@ -432,6 +432,6 @@ async fn strip_prefix_and_suffix_with_casing() {
   let t = ToolsMemoryModule;
   assert_eq!(t.name(), "memory");
   assert_eq!(ToolsMemoryModule::ID, "memory");
-  assert_eq!(t.tools()[0].name, "memory::recall");
+  assert_eq!(t.tools()[0].name, "memory--recall");
   assert_eq!(t.handle((), "recall", r#"{}"#.to_string()).await, "recalled");
 }

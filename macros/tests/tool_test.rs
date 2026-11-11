@@ -18,7 +18,7 @@ async fn descriptor_fields() {
   let descs = t.tools();
   assert_eq!(descs.len(), 1);
   let desc = &descs[0];
-  assert_eq!(desc.name, "add::add");
+  assert_eq!(desc.name, "add--add");
   assert_eq!(desc.description, "Adds two numbers together.");
   assert_eq!(desc.args.len(), 2);
 
@@ -105,7 +105,7 @@ async fn no_args_descriptor() {
   let t = NoArgs;
   let descs = t.tools();
   assert_eq!(descs.len(), 1);
-  assert_eq!(descs[0].name, "no_args::no_args");
+  assert_eq!(descs[0].name, "no_args--no_args");
   assert!(descs[0].args.is_empty());
 }
 
@@ -126,7 +126,7 @@ async fn no_docs(x: i64) -> Result<String, anyhow::Error> {
 async fn missing_docs() {
   let t = NoDocs;
   let descs = t.tools();
-  assert_eq!(descs[0].name, "no_docs::no_docs");
+  assert_eq!(descs[0].name, "no_docs--no_docs");
   assert!(descs[0].description.is_empty());
   assert_eq!(descs[0].args.len(), 1);
   assert!(descs[0].args[0].description.is_none());
@@ -145,7 +145,7 @@ async fn add_camel(first_operand: i64, second_operand: i64) -> Result<String, an
 async fn casing_camel() {
   let t = AddCamel;
   let descs = t.tools();
-  assert_eq!(descs[0].name, "addCamel::addCamel");
+  assert_eq!(descs[0].name, "addCamel--addCamel");
   assert_eq!(descs[0].args[0].name, "firstOperand");
   assert_eq!(descs[0].args[1].name, "secondOperand");
   assert_eq!(
@@ -167,7 +167,7 @@ async fn add_kebab(first_operand: i64, second_operand: i64) -> Result<String, an
 async fn casing_kebab() {
   let t = AddKebab;
   let descs = t.tools();
-  assert_eq!(descs[0].name, "add-kebab::add-kebab");
+  assert_eq!(descs[0].name, "add-kebab--add-kebab");
   assert_eq!(descs[0].args[0].name, "first-operand");
   assert_eq!(descs[0].args[1].name, "second-operand");
   assert_eq!(
@@ -189,7 +189,7 @@ async fn add_pascal(first_operand: i64, second_operand: i64) -> Result<String, a
 async fn casing_pascal() {
   let t = AddPascal;
   let descs = t.tools();
-  assert_eq!(descs[0].name, "AddPascal::AddPascal");
+  assert_eq!(descs[0].name, "AddPascal--AddPascal");
   assert_eq!(descs[0].args[0].name, "FirstOperand");
   assert_eq!(descs[0].args[1].name, "SecondOperand");
   assert_eq!(
@@ -207,5 +207,5 @@ async fn casing_pascal() {
 async fn casing_default_is_snake() {
   let t = Add;
   let descs = t.tools();
-  assert_eq!(descs[0].name, "add::add");
+  assert_eq!(descs[0].name, "add--add");
 }

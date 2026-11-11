@@ -324,7 +324,7 @@ mod tests {
   #[test]
   fn schema_builds_with_fresh_maps() {
     let desc = AgentToolDescriptor::new(
-      "ns::tool",
+      "ns--tool",
       "does a thing",
       vec![
         AgentToolArg::new("plain", AgentToolArgType::Primitive(AgentToolArgPrimitive::STRING))
@@ -334,7 +334,7 @@ mod tests {
     );
 
     let schema = desc.to_schema();
-    assert_eq!(schema["function"]["name"], "ns::tool");
+    assert_eq!(schema["function"]["name"], "ns--tool");
     assert_eq!(schema["function"]["parameters"]["properties"]["plain"]["type"], "string");
     assert_eq!(schema["function"]["parameters"]["properties"]["plain"]["description"], "a string arg");
     assert_eq!(schema["function"]["parameters"]["properties"]["choice"]["type"], "string");

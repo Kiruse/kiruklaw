@@ -151,7 +151,7 @@ pub(crate) fn toolset(attr: TokenStream, item: TokenStream) -> TokenStream {
     let method_name = &method.sig.ident;
     let method_name_str = method_name.to_string();
     let recased_method = casing.recase(&method_name_str);
-    let tool_name = format!("{}::{}", namespace, recased_method);
+    let tool_name = format!("{}--{}", namespace, recased_method);
     let args_ident = Ident::new(
       &format!("{}{}Args", struct_name, Casing::Pascal.recase(&method_name_str)),
       Span::call_site(),

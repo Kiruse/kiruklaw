@@ -139,9 +139,9 @@ impl<C: Clone> AgentLoop<C> {
       }
 
       for tc in tool_calls {
-        // Tool names are namespaced `<toolset>::<tool>`; the toolset's own
+        // Tool names are namespaced `<toolset>--<tool>`; the toolset's own
         // `handle` expects the bare tool name (see the trait contract).
-        let (ts_name, bare_name) = match tc.name.split_once("::") {
+        let (ts_name, bare_name) = match tc.name.split_once("--") {
           Some((ts_name, bare_name)) => (ts_name, bare_name),
           None => (tc.name.as_str(), tc.name.as_str()),
         };
@@ -609,8 +609,8 @@ mod tests {
     /// empty argument strings emit no event.
     sse_accumulates_tool_calls_by_index {
       let chunks = vec![
-        Ok(sse_chunk(r#"{"role":"assistant","content":null,"tool_calls":[{"index":0,"id":"t0","type":"function","function":{"name":"probe::record","arguments":"{\"va"}}]}"#, None).into_bytes()),
-        Ok(sse_chunk(r#"{"tool_calls":[{"index":1,"id":"t1","type":"function","function":{"name":"other::echo","arguments":""}}]}"#, None).into_bytes()),
+        Ok(sse_chunk(r#"{"role":"assistant","content":null,"tool_calls":[{"index":0,"id":"t0","type":"function","function":{"name":"probe--record","arguments":"{\"va"}}]}"#, None).into_bytes()),
+        Ok(sse_chunk(r#"{"tool_calls":[{"index":1,"id":"t1","type":"function","function":{"name":"other--echo","arguments":""}}]}"#, None).into_bytes()),
         Ok(sse_chunk(r#"{"tool_calls":[{"index":0,"function":{"arguments":"lue\":\"hi\"}"}}]}"#, None).into_bytes()),
         Ok(sse_chunk(r#"{"tool_calls":[{"index":1,"function":{"arguments":"{\"x\":1}"}}]}"#, None).into_bytes()),
         Ok(sse_chunk("{}", Some("tool_calls")).into_bytes()),
@@ -626,9 +626,9 @@ mod tests {
       assert_eq!(
         event_labels(&events),
         [
-          "start:0:t0:probe::record",
+          "start:0:t0:probe--record",
           "args:0:{\"va",
-          "start:1:t1:other::echo",
+          "start:1:t1:other--echo",
           "args:0:lue\":\"hi\"}",
           "args:1:{\"x\":1}",
           "done:tool_calls",
@@ -637,10 +637,10 @@ mod tests {
 
       assert_eq!(tool_calls.len(), 2);
       assert_eq!(tool_calls[0].id, "t0");
-      assert_eq!(tool_calls[0].name, "probe::record");
+      assert_eq!(tool_calls[0].name, "probe--record");
       assert_eq!(tool_calls[0].arguments, r#"{"value":"hi"}"#);
       assert_eq!(tool_calls[1].id, "t1");
-      assert_eq!(tool_calls[1].name, "other::echo");
+      assert_eq!(tool_calls[1].name, "other--echo");
       assert_eq!(tool_calls[1].arguments, r#"{"x":1}"#);
     }
   );
@@ -812,14 +812,14 @@ mod network_tests {
   }
 
   /// Regression: `AgentLoop::run` dispatched the full namespaced tool name
-  /// (`probe::record`) into the toolset's `handle`, whose arms match bare
+  /// (`probe--record`) into the toolset's `handle`, whose arms match bare
   /// tool names only — every tool call came back "Error: unknown tool".
   #[tokio::test]
   async fn run_dispatches_namespaced_tool_calls() {
     let tool_call_body = concat!(
       "data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":null,",
       "\"tool_calls\":[{\"index\":0,\"id\":\"t1\",\"type\":\"function\",\"function\":",
-      "{\"name\":\"probe::record\",\"arguments\":\"{\\\"value\\\":\\\"hello\\\"}\"}}]},",
+      "{\"name\":\"probe--record\",\"arguments\":\"{\\\"value\\\":\\\"hello\\\"}\"}}]},",
       "\"finish_reason\":null}]}\n\n",
       "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
       "data: [DONE]\n\n",
@@ -873,7 +873,7 @@ mod network_tests {
               "index": 0,
               "id": id,
               "type": "function",
-              "function": { "name": "probe::record", "arguments": args },
+              "function": { "name": "probe--record", "arguments": args },
             }],
           },
           "finish_reason": null,
@@ -918,7 +918,7 @@ mod network_tests {
       "I used a tool".to_string(),
       vec![ToolCall {
         id: "t0".to_string(),
-        name: "probe::record".to_string(),
+        name: "probe--record".to_string(),
         arguments: r#"{"value":"before"}"#.to_string(),
       }],
     ));
