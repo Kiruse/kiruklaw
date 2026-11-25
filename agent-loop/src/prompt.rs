@@ -2,14 +2,22 @@
 use std::collections::HashMap;
 use std::iter::Iterator;
 
+use bytes::Buf;
+#[cfg(target_arch = "wasm32")]
+use bytes::Bytes;
 use futures_util::StreamExt;
 
 use log::{info, trace, warn};
+use sse_core::{SseEvent, SseStream, SseStreamError};
 use tokio::sync::mpsc::Sender;
 use web_time::Instant;
 
-use crate::{AgentMessageChunk, AgentToolDescriptor, AgentUsage, Conversation, ConversationMessage, FinishReason, Loggable, ModelConfig, OpenAiChatCompletionChunk, OpenAiChatCompletionRequest, OpenAiMessage, OpenAiReasoningConfig, OpenAiRole, OpenAiStreamOptions, ToolCall, Toolset};
 use crate::error::Error;
+use crate::{
+  AgentMessageChunk, AgentToolDescriptor, AgentUsage, Conversation, ConversationMessage,
+  FinishReason, Loggable, ModelConfig, OpenAiChatCompletionChunk, OpenAiChatCompletionRequest,
+  OpenAiMessage, OpenAiReasoningConfig, OpenAiRole, OpenAiStreamOptions, ToolCall, Toolset,
+};
 
 /// Agentic loop configuration.
 ///
@@ -45,10 +53,7 @@ impl<C: Clone> AgentLoop<C> {
   }
 
   pub fn with_max_steps(self, max_steps: u8) -> Self {
-    Self {
-      max_steps,
-      ..self
-    }
+    Self { max_steps, ..self }
   }
 
   pub fn with_persona(self, persona: String) -> Self {
@@ -66,17 +71,12 @@ impl<C: Clone> AgentLoop<C> {
   }
 
   pub fn with_reasoning(self, reasoning: Option<OpenAiReasoningConfig>) -> Self {
-    Self {
-      reasoning,
-      ..self
-    }
+    Self { reasoning, ..self }
   }
 
   pub fn with_toolsets(self, toolsets: impl Iterator<Item = Toolset<C>>) -> Self {
     Self {
-      tools: toolsets
-        .map(|ts| (ts.name().to_string(), ts))
-        .collect(),
+      tools: toolsets.map(|ts| (ts.name().to_string(), ts)).collect(),
       ..self
     }
   }
@@ -96,7 +96,8 @@ impl<C: Clone> AgentLoop<C> {
   ) -> Result<AgentLoopResponse, Error> {
     let msgs = conversation.as_openai_msgs();
     let mut msgs = if self.hide_tool_history {
-      msgs.into_iter()
+      msgs
+        .into_iter()
         .filter(|msg| !matches!(msg.role, OpenAiRole::Tool))
         .map(|mut msg| {
           if matches!(msg.role, OpenAiRole::Assistant) {
@@ -109,10 +110,8 @@ impl<C: Clone> AgentLoop<C> {
       msgs
     };
 
-    let descriptors: Vec<AgentToolDescriptor> = self.tools
-      .values()
-      .flat_map(|ts| ts.tools())
-      .collect();
+    let descriptors: Vec<AgentToolDescriptor> =
+      self.tools.values().flat_map(|ts| ts.tools()).collect();
 
     let mut last_step = self.max_steps;
     let mut total_usage = AgentUsage::default();
@@ -124,7 +123,8 @@ impl<C: Clone> AgentLoop<C> {
         msgs.clone(),
         self.reasoning.clone(),
         sender.clone(),
-      ).await?;
+      )
+      .await?;
       total_usage += usage.clone();
       last_step_usage = usage;
 
@@ -147,11 +147,15 @@ impl<C: Clone> AgentLoop<C> {
         };
         let response = match self.tools.get_mut(ts_name) {
           Some(ts) => {
-            let res = ts.handle(
-              ctx.ctx(ts, &tc.name).map_err(|e| Error::External(format!("{e}")))?,
-              bare_name,
-              tc.arguments,
-            ).await;
+            let res = ts
+              .handle(
+                ctx
+                  .ctx(ts, &tc.name)
+                  .map_err(|e| Error::External(format!("{e}")))?,
+                bare_name,
+                tc.arguments,
+              )
+              .await;
             trace!("Agent called tool {} with result: {}", tc.name, res);
             res
           }
@@ -208,13 +212,19 @@ pub async fn prompt(
   reasoning: Option<OpenAiReasoningConfig>,
   sender: Sender<AgentMessageChunk>,
 ) -> Result<(ConversationMessage, AgentUsage), Error> {
-  let ModelConfig::OpenAi { base_url, api_key, model } = llm;
+  let ModelConfig::OpenAi {
+    base_url,
+    api_key,
+    model,
+  } = llm;
 
   let request = OpenAiChatCompletionRequest {
     model: model.clone(),
     messages,
     stream: true,
-    stream_options: Some(OpenAiStreamOptions { include_usage: true }),
+    stream_options: Some(OpenAiStreamOptions {
+      include_usage: true,
+    }),
     tools: if tools.is_empty() {
       None
     } else {
@@ -230,15 +240,13 @@ pub async fn prompt(
   // issued as a raw browser `fetch` and the body's `ReadableStream` is
   // unwrapped manually — see `fetch_stream`.
   #[cfg(not(target_arch = "wasm32"))]
-  let mut stream = {
+  let stream = {
     let client = reqwest::Client::new();
     let mut req = client.post(&url).json(&request);
     if !api_key.is_empty() {
       req = req.header("Authorization", format!("Bearer {}", api_key));
     }
-    let response = req
-      .send()
-      .await?;
+    let response = req.send().await?;
 
     if !response.status().is_success() {
       return Err(Error::status(response).await);
@@ -246,148 +254,162 @@ pub async fn prompt(
 
     response
       .bytes_stream()
-      .map(|chunk| chunk.map(|bytes| bytes.to_vec()).map_err(Error::from))
+      .map(|chunk| chunk.map_err(Error::from))
   };
   #[cfg(target_arch = "wasm32")]
-  let mut stream = {
+  let stream = {
     let body = serde_json::to_string(&request)?;
     fetch_stream(&url, api_key, &body).await?
   };
-  consume_sse(&mut stream, &sender).await
+  consume_sse(stream, &sender).await
 }
 
 /// Consume an SSE byte stream of OpenAI chat-completion chunks, forwarding
 /// content, reasoning, tool-call and finish events to `sender`, and return
 /// the accumulated assistant message plus usage.
 ///
+/// Event framing is delegated to [sse_core::SseStream]; everything above
+/// the frame layer (OpenAI chunk semantics, usage, `[DONE]`) stays here.
+///
 /// Target-independent: the transport (native reqwest vs browser fetch) is
 /// resolved by the caller, so this runs — and is tested — on all targets.
 async fn consume_sse<S>(
-  stream: &mut S,
+  stream: S,
   sender: &Sender<AgentMessageChunk>,
 ) -> Result<(ConversationMessage, AgentUsage), Error>
 where
-  S: futures_util::Stream<Item = Result<Vec<u8>, Error>> + Unpin,
+  S: futures_util::TryStream<Error = Error> + Unpin,
+  S::Ok: Buf,
 {
   let start = Instant::now();
-  let mut buffer = String::new();
   let mut done_sent = false;
   let mut content_acc = String::new();
   let mut tool_calls_acc: Vec<ToolCall> = Vec::new();
   let mut usage = AgentUsage::default();
 
-  // stupid algorithms get written & maintained by AI
-  // cus i get a headache if i try to write good code here
-  // SSE loop
-  'outer: while let Some(chunk) = stream.next().await {
-    let chunk = chunk?;
-    buffer.push_str(&String::from_utf8_lossy(&chunk));
-
-    while let Some(pos) = buffer.find('\n') {
-      let line = buffer[..pos].trim_end_matches('\r').to_string();
-      buffer = buffer[pos + 1..].to_string();
-
-      if !line.starts_with("data: ") {
+  let mut stream = SseStream::new(stream);
+  while let Some(event) = stream.next().await {
+    let data = match event {
+      Ok(SseEvent::Message(msg)) => msg.data,
+      Ok(SseEvent::Retry(_)) => continue,
+      Err(SseStreamError::Inner(err)) => return Err(err),
+      Err(SseStreamError::PayloadTooLarge(err)) => {
+        warn!("Skipping oversized SSE event: {err}");
         continue;
       }
+    };
 
-      let data = &line[6..];
-      if data == "[DONE]" {
-        if !done_sent {
-          sender.send(AgentMessageChunk::Done {
+    if data == "[DONE]" {
+      if !done_sent {
+        sender
+          .send(AgentMessageChunk::Done {
             reason: FinishReason::Stop,
-          }).await.log_warn(None);
-        }
-        break 'outer;
+          })
+          .await
+          .log_warn(None);
       }
+      break;
+    }
 
-      let parsed: OpenAiChatCompletionChunk = match serde_json::from_str(data) {
-        Ok(v) => v,
-        Err(e) => {
-          warn!("Failed to parse completion chunk: {e}");
-          continue;
-        },
-      };
+    let parsed: OpenAiChatCompletionChunk = match serde_json::from_str(&data) {
+      Ok(v) => v,
+      Err(e) => {
+        warn!("Failed to parse completion chunk: {e}");
+        continue;
+      }
+    };
 
-      // The terminal usage chunk (`include_usage: true`) arrives with an
-      // empty `choices` array — only look at a choice if there is one.
-      let choice = parsed.choices.first();
+    // The terminal usage chunk (`include_usage: true`) arrives with an
+    // empty `choices` array — only look at a choice if there is one.
+    let choice = parsed.choices.first();
 
-      if let Some(delta) = choice.map(|choice| &choice.delta) {
-        if let Some(content) = &delta.content {
-          content_acc.push_str(content);
-          sender.send(AgentMessageChunk::Content {
+    if let Some(delta) = choice.map(|choice| &choice.delta) {
+      if let Some(content) = &delta.content {
+        content_acc.push_str(content);
+        sender
+          .send(AgentMessageChunk::Content {
             text: content.clone(),
-          }).await.log_warn(None);
-        }
-
-        if let Some(text) = delta.reasoning() {
-          if !text.is_empty() {
-            sender.send(AgentMessageChunk::Reasoning {
-              text: text.clone(),
-            }).await.log_warn(None);
-          }
-        }
-
-        for tc in &delta.tool_calls {
-          if let Some(id) = &tc.id {
-            let name = tc.function.name.clone().unwrap_or_default();
-            sender.send(AgentMessageChunk::ToolCallStart {
-              index: tc.index,
-              id: id.clone(),
-              name: name.clone(),
-            }).await.log_warn(None);
-            while tool_calls_acc.len() <= tc.index {
-              tool_calls_acc.push(Default::default());
-            }
-            tool_calls_acc[tc.index] = ToolCall {
-              id: id.clone(),
-              name: name.clone(),
-              arguments: "".to_string(),
-            };
-          }
-
-          if let Some(args) = &tc.function.arguments {
-            if tool_calls_acc.len() > tc.index {
-              tool_calls_acc[tc.index].arguments.push_str(args);
-            }
-            if !args.is_empty() {
-              sender.send(AgentMessageChunk::ToolCallArgs {
-                index: tc.index,
-                args: args.clone(),
-              }).await.log_warn(None);
-            }
-          }
-        }
+          })
+          .await
+          .log_warn(None);
       }
 
-      if let Some(reason) = choice.and_then(|choice| choice.finish_reason.as_ref()) {
-        if !done_sent {
-          done_sent = true;
-          let finish = match reason.as_str() {
-            "stop" => FinishReason::Stop,
-            "length" => FinishReason::Length,
-            "tool_calls" => FinishReason::ToolCalls,
-            "content_filter" => FinishReason::ContentFilter,
-            _ => FinishReason::Stop,
-          };
+      if let Some(text) = delta.reasoning() {
+        if !text.is_empty() {
           sender
-            .send(AgentMessageChunk::Done { reason: finish })
+            .send(AgentMessageChunk::Reasoning { text: text.clone() })
             .await
             .log_warn(None);
         }
       }
 
-      if let Some(u) = &parsed.usage {
-        usage.input_tokens = u.prompt_tokens;
-        usage.output_tokens = u.completion_tokens;
+      for tc in &delta.tool_calls {
+        if let Some(id) = &tc.id {
+          let name = tc.function.name.clone().unwrap_or_default();
+          sender
+            .send(AgentMessageChunk::ToolCallStart {
+              index: tc.index,
+              id: id.clone(),
+              name: name.clone(),
+            })
+            .await
+            .log_warn(None);
+          while tool_calls_acc.len() <= tc.index {
+            tool_calls_acc.push(Default::default());
+          }
+          tool_calls_acc[tc.index] = ToolCall {
+            id: id.clone(),
+            name: name.clone(),
+            arguments: "".to_string(),
+          };
+        }
+
+        if let Some(args) = &tc.function.arguments {
+          if tool_calls_acc.len() > tc.index {
+            tool_calls_acc[tc.index].arguments.push_str(args);
+          }
+          if !args.is_empty() {
+            sender
+              .send(AgentMessageChunk::ToolCallArgs {
+                index: tc.index,
+                args: args.clone(),
+              })
+              .await
+              .log_warn(None);
+          }
+        }
       }
+    }
+
+    if let Some(reason) = choice.and_then(|choice| choice.finish_reason.as_ref()) {
+      if !done_sent {
+        done_sent = true;
+        let finish = match reason.as_str() {
+          "stop" => FinishReason::Stop,
+          "length" => FinishReason::Length,
+          "tool_calls" => FinishReason::ToolCalls,
+          "content_filter" => FinishReason::ContentFilter,
+          _ => FinishReason::Stop,
+        };
+        sender
+          .send(AgentMessageChunk::Done { reason: finish })
+          .await
+          .log_warn(None);
+      }
+    }
+
+    if let Some(u) = &parsed.usage {
+      usage.input_tokens = u.prompt_tokens;
+      usage.output_tokens = u.completion_tokens;
     }
   }
 
   usage.total_duration_ms = start.elapsed().as_millis() as u64;
 
-  Ok((ConversationMessage::assistant(content_acc, tool_calls_acc), usage))
+  Ok((
+    ConversationMessage::assistant(content_acc, tool_calls_acc),
+    usage,
+  ))
 }
 
 /// Provides context to [AgentLoop::run] invokations.
@@ -421,12 +443,12 @@ async fn fetch_stream(
   url: &str,
   api_key: &str,
   body: &str,
-) -> Result<std::pin::Pin<Box<dyn futures_util::Stream<Item = Result<Vec<u8>, Error>>>>, Error> {
+) -> Result<std::pin::Pin<Box<dyn futures_util::Stream<Item = Result<Bytes, Error>>>>, Error> {
   use futures_util::stream;
   use wasm_bindgen::JsCast;
 
-  let headers = web_sys::Headers::new()
-    .map_err(|_| Error::external("failed to create fetch headers"))?;
+  let headers =
+    web_sys::Headers::new().map_err(|_| Error::external("failed to create fetch headers"))?;
   headers
     .set("Content-Type", "application/json")
     .map_err(|_| Error::external("failed to set Content-Type"))?;
@@ -444,8 +466,8 @@ async fn fetch_stream(
   let request = web_sys::Request::new_with_str_and_init(url, &init)
     .map_err(|_| Error::external("failed to create fetch request"))?;
 
-  let window = web_sys::window()
-    .ok_or_else(|| Error::external("no global window object to fetch from"))?;
+  let window =
+    web_sys::window().ok_or_else(|| Error::external("no global window object to fetch from"))?;
   let response = wasm_bindgen_futures::JsFuture::from(window.fetch_with_request(&request))
     .await
     .map_err(|err| Error::external(format!("fetch failed: {err:?}")))?;
@@ -475,7 +497,9 @@ async fn fetch_stream(
     .map_err(|_| Error::external("failed to acquire the body stream reader"))?;
 
   Ok(Box::pin(stream::unfold(reader, |reader| async move {
-    let chunk = wasm_bindgen_futures::JsFuture::from(reader.read()).await.ok()?;
+    let chunk = wasm_bindgen_futures::JsFuture::from(reader.read())
+      .await
+      .ok()?;
     let done = js_sys::Reflect::get(&chunk, &wasm_bindgen::JsValue::from_str("done"))
       .ok()?
       .as_bool()?;
@@ -484,13 +508,14 @@ async fn fetch_stream(
     }
     let value = js_sys::Reflect::get(&chunk, &wasm_bindgen::JsValue::from_str("value")).ok()?;
     let array = value.dyn_into::<js_sys::Uint8Array>().ok()?;
-    Some((Ok::<Vec<u8>, Error>(array.to_vec()), reader))
+    Some((Ok(Bytes::from(array.to_vec())), reader))
   })))
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
+  use bytes::Bytes;
 
   #[cfg(target_arch = "wasm32")]
   use wasm_bindgen_test::wasm_bindgen_test;
@@ -518,10 +543,13 @@ mod tests {
   /// collect every event it emitted alongside its final result.
   async fn consume(
     chunks: Vec<SseChunk>,
-  ) -> (Vec<AgentMessageChunk>, Result<(ConversationMessage, AgentUsage), Error>) {
-    let mut stream = futures_util::stream::iter(chunks);
+  ) -> (
+    Vec<AgentMessageChunk>,
+    Result<(ConversationMessage, AgentUsage), Error>,
+  ) {
     let (tx, mut rx) = tokio::sync::mpsc::channel(256);
-    let result = consume_sse(&mut stream, &tx).await;
+    let stream = futures_util::stream::iter(chunks).map(|chunk| chunk.map(Bytes::from));
+    let result = consume_sse(stream, &tx).await;
     drop(tx);
     let mut events = Vec::new();
     while let Some(event) = rx.recv().await {
@@ -566,7 +594,7 @@ mod tests {
         AgentMessageChunk::Reasoning { text } => format!("reasoning:{text}"),
         AgentMessageChunk::ToolCallStart { index, id, name } => {
           format!("start:{index}:{id}:{name}")
-        },
+        }
         AgentMessageChunk::ToolCallArgs { index, args } => format!("args:{index}:{args}"),
         AgentMessageChunk::Done { reason } => format!("done:{}", reason_label(reason)),
       })
@@ -678,9 +706,13 @@ mod tests {
         ": keepalive\n",
         "event: ping\n",
         "garbage\n",
+        "\n",
         "data: {not json}\n",
+        "\n",
         "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":null}]}\n",
+        "\n",
         "data: [DONE]\n",
+        "\n",
       ).as_bytes().to_vec())];
 
       let (events, result) = consume(chunks).await;
@@ -734,7 +766,7 @@ mod tests {
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod network_tests {
   use super::*;
-  use crate::{toolset, AgentToolset};
+  use crate::{AgentToolset, toolset};
   use std::sync::{Arc, Mutex};
 
   #[derive(Default)]
@@ -769,7 +801,9 @@ mod network_tests {
     let bodies = Arc::new(Mutex::new(bodies.into_iter()));
     tokio::spawn(async move {
       loop {
-        let Some(body) = bodies.lock().unwrap().next() else { break };
+        let Some(body) = bodies.lock().unwrap().next() else {
+          break;
+        };
         let (mut sock, _) = listener.accept().await.unwrap();
         let mut data: Vec<u8> = Vec::new();
         let mut buf = vec![0u8; 8192];
@@ -878,10 +912,12 @@ mod network_tests {
           },
           "finish_reason": null,
         }]
-      }).to_string();
+      })
+      .to_string();
       let done = serde_json::json!({
         "choices": [{ "index": 0, "delta": {}, "finish_reason": "tool_calls" }]
-      }).to_string();
+      })
+      .to_string();
       format!("data: {chunk}\n\ndata: {done}\n\ndata: [DONE]\n\n")
     };
     let final_body = concat!(
@@ -898,7 +934,8 @@ mod network_tests {
         final_body.to_string(),
       ],
       Some(recorded_requests.clone()),
-    ).await;
+    )
+    .await;
 
     let probe = Probe::default();
     let recorded = probe.recorded.clone();
@@ -926,7 +963,10 @@ mod network_tests {
       "t0".to_string(),
       "before-run result".to_string(),
     ));
-    conversation.push(ConversationMessage::assistant("all done earlier".to_string(), vec![]));
+    conversation.push(ConversationMessage::assistant(
+      "all done earlier".to_string(),
+      vec![],
+    ));
     conversation.push(ConversationMessage::user("record things".to_string()));
 
     let (tx, mut rx) = tokio::sync::mpsc::channel(16);
@@ -960,7 +1000,10 @@ mod network_tests {
       let req = serde_json::from_str::<serde_json::Value>(raw)
         .unwrap()
         .to_string();
-      assert!(!req.contains("t0"), "request {idx} leaked pre-run tool call");
+      assert!(
+        !req.contains("t0"),
+        "request {idx} leaked pre-run tool call"
+      );
       assert!(
         !req.contains("before-run result"),
         "request {idx} leaked pre-run tool result",

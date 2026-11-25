@@ -965,6 +965,7 @@ name = "kiruklaw-agent-loop"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bytes",
  "futures-util",
  "js-sys",
  "kiruklaw-macros",
@@ -972,6 +973,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "sse-core",
  "thiserror 2.0.20",
  "tokio",
  "wasm-bindgen",
@@ -1987,6 +1989,19 @@ checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "sse-core"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "28f4c044039e70ba5724b7e9dacf9fb610394773d15df2bb629170ca30391c88"
+dependencies = [
+ "bytes",
+ "futures-core",
+ "memchr",
+ "pin-project-lite",
+ "thiserror 2.0.20",
 ]
 
 [[package]]

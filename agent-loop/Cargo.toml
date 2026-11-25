@@ -5,10 +5,12 @@ edition = "2024"
 
 [dependencies]
 anyhow.workspace = true
+bytes.workspace = true
 log.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 serde_json.workspace = true
+sse-core.workspace = true
 
 kiruklaw-macros = { version = "0.1.0", path = "../macros" }
 
