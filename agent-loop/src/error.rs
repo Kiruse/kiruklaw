@@ -10,6 +10,8 @@ pub enum Error {
   Json(#[from] serde_json::Error),
   #[error("SSE parse error: {0}")]
   Sse(String),
+  #[error("Unauthorized")]
+  Unauthorized,
   #[error("External error: {0}")]
   External(String),
 }

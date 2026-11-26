@@ -471,7 +471,7 @@ impl App {
 
   fn start_agent_loop(&mut self) {
     let model_name = self.current_model.as_ref().unwrap().clone();
-    let model_config: kiruklaw_agent_loop::ModelConfig = self
+    let model: kiruklaw_agent_loop::OpenAiCompatibleConfig = self
       .config
       .models
       .get(&model_name)
@@ -495,8 +495,15 @@ impl App {
         .build();
       match rt {
         Ok(rt) => rt.block_on(async move {
-          let mut agent_loop = AgentLoop::new(model_config);
-          let _ = agent_loop.run(ContextProvider::Owned(()), &mut conversation, stream_tx).await;
+          let mut agent_loop = AgentLoop::default();
+          let _ = agent_loop
+            .run(
+              &model,
+              ContextProvider::Owned(()),
+              &mut conversation,
+              stream_tx,
+            )
+            .await;
           let _ = done_tx.send(conversation).await;
         }),
         Err(_) => {

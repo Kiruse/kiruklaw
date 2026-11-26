@@ -1,9 +1,11 @@
+use std::borrow::Cow;
 use std::fmt::Display;
 
 pub use log::{debug, trace, info, warn, error};
 use serde::Deserialize;
 use serde::Serialize;
 
+use super::error::Error;
 pub use super::openai::*;
 pub use super::tools::*;
 
@@ -22,23 +24,42 @@ impl std::ops::AddAssign for AgentUsage {
   }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum ModelConfig {
-  OpenAi {
-    base_url: String,
-    api_key: String,
-    model: String,
-  },
+pub trait OpenAiCompatible {
+  /// Base URL of the OpenAI-compatible LLM host
+  fn base_url(&self) -> Cow<'_, str>;
+
+  /// Identifier of requested model
+  fn model(&self) -> Cow<'_, str>;
+
+  /// Authentication bearer to use, if any
+  fn auth(&self) -> Option<Cow<'_, str>>;
+
+  /// Refresh & return new authentication bearer, if applicable. If not,
+  /// should return [Error::Unauthorized]. Default implementation always
+  /// returns `Error::Unauthorized`.
+  fn refresh_auth(&self) -> impl Future<Output = Result<Option<Cow<'_, str>>, Error>> {
+    async { Err(Error::Unauthorized) }
+  }
 }
 
-impl Default for ModelConfig {
-  fn default() -> Self {
-    Self::OpenAi {
-      base_url: String::new(),
-      api_key: String::new(),
-      model: String::new(),
-    }
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct OpenAiCompatibleConfig {
+  pub base_url: String,
+  pub api_key: String,
+  pub model: String,
+}
+
+impl OpenAiCompatible for OpenAiCompatibleConfig {
+  fn base_url(&self) -> Cow<'_, str> {
+    Cow::Borrowed(&self.base_url)
+  }
+
+  fn model(&self) -> Cow<'_, str> {
+    Cow::Borrowed(&self.model)
+  }
+
+  fn auth(&self) -> Option<Cow<'_, str>> {
+    Some(Cow::Borrowed(self.api_key.as_str())).filter(|key| !key.trim().is_empty())
   }
 }
 

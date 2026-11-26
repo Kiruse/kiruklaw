@@ -28,10 +28,12 @@ impl ModelConfig {
   }
 }
 
-impl From<ModelConfig> for kiruklaw_agent_loop::ModelConfig {
+/// Convert to the agent loop's model config. The resolved API key becomes
+/// the auth token of the [kiruklaw_agent_loop::OpenAiCompatible] model.
+impl From<ModelConfig> for kiruklaw_agent_loop::OpenAiCompatibleConfig {
   fn from(m: ModelConfig) -> Self {
     let api_key = m.resolve_api_key();
-    Self::OpenAi {
+    Self {
       base_url: m.base_url,
       api_key,
       model: m.model,

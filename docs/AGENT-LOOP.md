@@ -9,22 +9,26 @@ The agent loop is implemented in `kiruklaw-agent-loop`. It sends requests to an 
 ```rust
 pub async fn run(
     &mut self,
+    ctx: ContextProvider<'_, C>,
+    auth: &impl PromptAuth,
     conversation: &mut Conversation,
     sender: Sender<AgentMessageChunk>,
 ) -> Result<AgentLoopResponse, Error>
 ```
 
-Runs the full multi-step loop on the `AgentLoop` struct. On each step, calls `prompt()` to get an LLM response. If the response contains tool calls, dispatches them (looked up by name from `self.tools`) and pushes the results into the conversation before the next step. If no tool calls, the loop terminates. Streams all chunks (content, reasoning, tool call fragments, done) to the caller via the `sender` channel. Accumulates `AgentUsage` across steps and includes it in the returned `AgentLoopResponse`.
+Runs the full multi-step loop on the `AgentLoop` struct. On each step, calls `prompt()` (with `auth`) to get an LLM response. If the response contains tool calls, dispatches them (looked up by name from `self.tools`) and pushes the results into the conversation before the next step. If no tool calls, the loop terminates. Streams all chunks (content, reasoning, tool call fragments, done) to the caller via the `sender` channel. Accumulates `AgentUsage` across steps and includes it in the returned `AgentLoopResponse`.
 
-Toolsets are stored as `HashMap<String, Toolset>` keyed by toolset name and can be set via `AgentLoop::with_toolsets()` which accepts `impl Iterator<Item = Toolset>`. Descriptors are collected via `ts.tools()` from each toolset. Tool calls are dispatched by splitting `tc.name` on `::` to find the target toolset, then calling `ts.handle(ctx, &tc.name, tc.arguments)` where `ctx` is the owned context value (cloned by the caller for sequential dispatch).
+Toolsets are stored as `HashMap<String, Toolset>` keyed by toolset name and can be set via `AgentLoop::with_toolsets()` which accepts `impl Iterator<Item = Toolset>`. Descriptors are collected via `ts.tools()` from each toolset. Tool calls are dispatched by splitting `tc.name` on `--` to find the target toolset, then calling `ts.handle(ctx, &tc.name, tc.arguments)` where `ctx` is produced by the `ContextProvider` (an owned cloneable value or a factory closure).
 
 ### `prompt`
 
 ```rust
 pub async fn prompt(
     llm: &ModelConfig,
+    auth: &impl PromptAuth,
     tools: &[AgentToolDescriptor],
     messages: Vec<OpenAiMessage>,
+    reasoning: Option<OpenAiReasoningConfig>,
     sender: Sender<AgentMessageChunk>,
 ) -> Result<(ConversationMessage, AgentUsage), Error>
 ```
@@ -48,11 +52,22 @@ pub struct AgentLoop {
 
 ```rust
 pub enum ModelConfig {
-    OpenAi { base_url: String, api_key: String, model: String },
+    OpenAi { base_url: String, model: String },
 }
 ```
 
-Serde-tagged enum (`#[serde(tag = "type", rename_all = "snake_case")]`). Has a manual `Default` impl returning `OpenAi` with empty strings.
+Serde-tagged enum (`#[serde(tag = "type", rename_all = "snake_case")]`). Has a manual `Default` impl returning `OpenAi` with empty strings. Contains no API key: authentication is supplied per call via the `auth: &impl PromptAuth` argument of `AgentLoop::run` and `prompt`.
+
+### `PromptAuth`
+
+```rust
+pub trait PromptAuth {
+    fn get_token(&self) -> Option<&str>;
+    fn refresh(&self) -> impl Future<Output = Result<Option<&str>, Error>> { ... };
+}
+```
+
+Supplies the bearer token for each request. `get_token()` returning `None` (or an empty `String`/`&str` — both have blanket impls) omits the `Authorization` header entirely. On an HTTP 401 response the request is re-sent once with the token returned by `refresh()`; its default impl returns `Err(Error::Unauthorized)`. Custom impls can mutate shared state (e.g. rotate session tokens mid-run) and hand out the updated token from `refresh()`.
 
 ### `Conversation`
 
@@ -124,4 +139,4 @@ Tool calls in the LLM response are dispatched by splitting `tc.name` on `::` to 
 
 ## Wire protocol
 
-The library speaks the OpenAI chat completion API. The request POSTs to `{base_url}/chat/completions` with JSON body containing `model`, `messages`, `stream: true`, `stream_options: { include_usage: true }`, and optionally `tools` (omitted when the toolsets map is empty). The response is an SSE stream of `data: {...}` lines terminated by `data: [DONE]`.
+The library speaks the OpenAI chat completion API. The request POSTs to `{base_url}/chat/completions` with JSON body containing `model`, `messages`, `stream: true`, `stream_options: { include_usage: true }`, and optionally `tools` (omitted when the toolsets map is empty). The request carries `Authorization: Bearer <token>` when `auth.get_token()` returns `Some`; on a 401 response the request is re-sent once with the token from `auth.refresh()`. The response is an SSE stream of `data: {...}` lines terminated by `data: [DONE]`.

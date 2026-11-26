@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::iter::Iterator;
 
@@ -15,7 +16,7 @@ use web_time::Instant;
 use crate::error::Error;
 use crate::{
   AgentMessageChunk, AgentToolDescriptor, AgentUsage, Conversation, ConversationMessage,
-  FinishReason, Loggable, ModelConfig, OpenAiChatCompletionChunk, OpenAiChatCompletionRequest,
+  FinishReason, Loggable, OpenAiCompatible, OpenAiChatCompletionChunk, OpenAiChatCompletionRequest,
   OpenAiMessage, OpenAiReasoningConfig, OpenAiRole, OpenAiStreamOptions, ToolCall, Toolset,
 };
 
@@ -30,7 +31,6 @@ use crate::{
 /// **Note** that [AgentLoop::subagents] is currently an unused placeholder.
 pub struct AgentLoop<C: Clone = ()> {
   pub max_steps: u8,
-  pub model: ModelConfig,
   pub persona: Option<String>,
   /// Hide tool calls & their results from earlier rounds in the prompt,
   /// so each request only carries the current round's tool traffic.
@@ -45,13 +45,6 @@ pub struct AgentLoop<C: Clone = ()> {
 }
 
 impl<C: Clone> AgentLoop<C> {
-  pub fn new(model: ModelConfig) -> Self {
-    Self {
-      model,
-      ..Default::default()
-    }
-  }
-
   pub fn with_max_steps(self, max_steps: u8) -> Self {
     Self { max_steps, ..self }
   }
@@ -90,6 +83,7 @@ impl<C: Clone> AgentLoop<C> {
 
   pub async fn run(
     &mut self,
+    model: &impl OpenAiCompatible,
     ctx: ContextProvider<'_, C>,
     conversation: &mut Conversation,
     sender: Sender<AgentMessageChunk>,
@@ -118,7 +112,7 @@ impl<C: Clone> AgentLoop<C> {
     let mut last_step_usage = AgentUsage::default();
     for step in 0..self.max_steps {
       let (response, usage) = prompt(
-        &self.model,
+        model,
         &descriptors,
         msgs.clone(),
         self.reasoning.clone(),
@@ -183,7 +177,6 @@ impl<C: Clone> Default for AgentLoop<C> {
   fn default() -> Self {
     Self {
       max_steps: 20,
-      model: Default::default(),
       persona: None,
       hide_tool_history: false,
       reasoning: None,
@@ -206,20 +199,14 @@ pub struct AgentLoopResponse {
 /// Request a single prompt from the LLM endpoint. Does not handle
 /// or resolve tool calls, and uses MPSC for SSE events.
 pub async fn prompt(
-  llm: &ModelConfig,
+  model: &impl OpenAiCompatible,
   tools: &[AgentToolDescriptor],
   messages: Vec<OpenAiMessage>,
   reasoning: Option<OpenAiReasoningConfig>,
   sender: Sender<AgentMessageChunk>,
 ) -> Result<(ConversationMessage, AgentUsage), Error> {
-  let ModelConfig::OpenAi {
-    base_url,
-    api_key,
-    model,
-  } = llm;
-
   let request = OpenAiChatCompletionRequest {
-    model: model.clone(),
+    model: model.model().to_string(),
     messages,
     stream: true,
     stream_options: Some(OpenAiStreamOptions {
@@ -233,7 +220,7 @@ pub async fn prompt(
     reasoning,
   };
 
-  let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
+  let url = format!("{}/chat/completions", model.base_url().trim_end_matches('/'));
 
   // Native reqwest streams the body via hyper. On wasm, reqwest's `stream`
   // feature is a no-op (`bytes_stream` does not exist), so the request is
@@ -242,11 +229,23 @@ pub async fn prompt(
   #[cfg(not(target_arch = "wasm32"))]
   let stream = {
     let client = reqwest::Client::new();
-    let mut req = client.post(&url).json(&request);
-    if !api_key.is_empty() {
-      req = req.header("Authorization", format!("Bearer {}", api_key));
-    }
-    let response = req.send().await?;
+
+    let send = async |token: Option<Cow<str>>| {
+      let mut req = client.post(&url).json(&request);
+      if let Some(bearer) = token {
+        req = req.header("Authorization", format!("Bearer {}", bearer));
+      }
+      req.send().await
+    };
+
+    let response = send(model.auth()).await?;
+
+    let response = match response.status().as_u16() {
+      401 => send(
+        model.refresh_auth().await?
+      ).await?,
+      _ => response,
+    };
 
     if !response.status().is_success() {
       return Err(Error::status(response).await);
@@ -259,7 +258,7 @@ pub async fn prompt(
   #[cfg(target_arch = "wasm32")]
   let stream = {
     let body = serde_json::to_string(&request)?;
-    fetch_stream(&url, api_key, &body).await?
+    fetch_stream(&url, model, &body).await?
   };
   consume_sse(stream, &sender).await
 }
@@ -441,39 +440,47 @@ impl<'a, C: Clone> ContextProvider<'a, C> {
 #[cfg(target_arch = "wasm32")]
 async fn fetch_stream(
   url: &str,
-  api_key: &str,
+  model: &impl OpenAiCompatible,
   body: &str,
 ) -> Result<std::pin::Pin<Box<dyn futures_util::Stream<Item = Result<Bytes, Error>>>>, Error> {
   use futures_util::stream;
   use wasm_bindgen::JsCast;
 
-  let headers =
-    web_sys::Headers::new().map_err(|_| Error::external("failed to create fetch headers"))?;
-  headers
-    .set("Content-Type", "application/json")
-    .map_err(|_| Error::external("failed to set Content-Type"))?;
-  if !api_key.is_empty() {
+  let fetch = async |token: Option<&str>| -> Result<web_sys::Response, Error> {
+    let headers =
+      web_sys::Headers::new().map_err(|_| Error::external("failed to create fetch headers"))?;
     headers
-      .set("Authorization", &format!("Bearer {}", api_key))
-      .map_err(|_| Error::external("failed to set Authorization"))?;
-  }
+      .set("Content-Type", "application/json")
+      .map_err(|_| Error::external("failed to set Content-Type"))?;
+    if let Some(bearer) = token {
+      headers
+        .set("Authorization", &format!("Bearer {}", bearer))
+        .map_err(|_| Error::external("failed to set Authorization"))?;
+    }
 
-  let init = web_sys::RequestInit::new();
-  init.set_method("POST");
-  init.set_headers(&headers.into());
-  init.set_body(&wasm_bindgen::JsValue::from_str(body));
+    let init = web_sys::RequestInit::new();
+    init.set_method("POST");
+    init.set_headers(&headers.into());
+    init.set_body(&wasm_bindgen::JsValue::from_str(body));
 
-  let request = web_sys::Request::new_with_str_and_init(url, &init)
-    .map_err(|_| Error::external("failed to create fetch request"))?;
+    let request = web_sys::Request::new_with_str_and_init(url, &init)
+      .map_err(|_| Error::external("failed to create fetch request"))?;
 
-  let window =
-    web_sys::window().ok_or_else(|| Error::external("no global window object to fetch from"))?;
-  let response = wasm_bindgen_futures::JsFuture::from(window.fetch_with_request(&request))
-    .await
-    .map_err(|err| Error::external(format!("fetch failed: {err:?}")))?;
-  let response: web_sys::Response = response
-    .dyn_into()
-    .map_err(|_| Error::external("fetch did not resolve to a Response"))?;
+    let window =
+      web_sys::window().ok_or_else(|| Error::external("no global window object to fetch from"))?;
+    let response = wasm_bindgen_futures::JsFuture::from(window.fetch_with_request(&request))
+      .await
+      .map_err(|err| Error::external(format!("fetch failed: {err:?}")))?;
+    response
+      .dyn_into()
+      .map_err(|_| Error::external("fetch did not resolve to a Response"))
+  };
+
+  let response = fetch(model.auth().as_deref()).await?;
+  let response = match response.status() {
+    401 => fetch(model.refresh_auth().await?.as_deref()).await?,
+    _ => response,
+  };
 
   if !response.ok() {
     let status = response.status();
@@ -766,7 +773,7 @@ mod tests {
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod network_tests {
   use super::*;
-  use crate::{AgentToolset, toolset};
+  use crate::{AgentToolset, OpenAiCompatibleConfig, toolset};
   use std::sync::{Arc, Mutex};
 
   #[derive(Default)]
@@ -781,6 +788,38 @@ mod network_tests {
     async fn record(&self, _ctx: (), value: String) -> Result<String, anyhow::Error> {
       self.recorded.lock().unwrap().push(value);
       Ok("recorded".to_string())
+    }
+  }
+
+  /// Model whose bearer token flips from `stale` to `fresh` on the first refresh.
+  struct RefreshableModel {
+    base_url: String,
+    model: String,
+    refreshed: std::sync::atomic::AtomicBool,
+  }
+
+  impl OpenAiCompatible for RefreshableModel {
+    fn base_url(&self) -> Cow<'_, str> {
+      Cow::Borrowed(&self.base_url)
+    }
+
+    fn model(&self) -> Cow<'_, str> {
+      Cow::Borrowed(&self.model)
+    }
+
+    fn auth(&self) -> Option<Cow<'_, str>> {
+      if self.refreshed.load(std::sync::atomic::Ordering::SeqCst) {
+        Some(Cow::Borrowed("fresh"))
+      } else {
+        Some(Cow::Borrowed("stale"))
+      }
+    }
+
+    async fn refresh_auth(&self) -> Result<Option<Cow<'_, str>>, Error> {
+      self
+        .refreshed
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+      Ok(self.auth())
     }
   }
 
@@ -845,6 +884,64 @@ mod network_tests {
     format!("http://127.0.0.1:{port}/v1")
   }
 
+  /// Serve full pre-rendered HTTP responses, one per incoming connection,
+  /// in order. When `recorded` is given, each request's `Authorization`
+  /// header value is appended to it.
+  async fn serve_responses_recording_auth(
+    responses: Vec<String>,
+    recorded: Option<Arc<Mutex<Vec<Option<String>>>>>,
+  ) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let responses = Arc::new(Mutex::new(responses.into_iter()));
+    tokio::spawn(async move {
+      loop {
+        let Some(response) = responses.lock().unwrap().next() else {
+          break;
+        };
+        let (mut sock, _) = listener.accept().await.unwrap();
+        let mut data: Vec<u8> = Vec::new();
+        let mut buf = vec![0u8; 8192];
+        let head_end = loop {
+          let n = sock.read(&mut buf).await.unwrap();
+          assert!(n > 0, "client closed before sending a request");
+          data.extend_from_slice(&buf[..n]);
+          let Some(head_end) = data.windows(4).position(|w| w == b"\r\n\r\n") else {
+            continue;
+          };
+          let content_length: usize = String::from_utf8_lossy(&data[..head_end])
+            .lines()
+            .find_map(|l| {
+              l.to_ascii_lowercase()
+                .strip_prefix("content-length:")?
+                .trim()
+                .parse()
+                .ok()
+            })
+            .unwrap_or(0);
+          if data.len() >= head_end + 4 + content_length {
+            break head_end;
+          }
+        };
+        if let Some(recorded) = &recorded {
+          let auth = String::from_utf8_lossy(&data[..head_end])
+            .lines()
+            .find_map(|l| {
+              let (name, value) = l.split_once(':')?;
+              if !name.eq_ignore_ascii_case("authorization") {
+                return None;
+              }
+              Some(value.trim().to_string())
+            });
+          recorded.lock().unwrap().push(auth);
+        }
+        sock.write_all(response.as_bytes()).await.unwrap();
+      }
+    });
+    format!("http://127.0.0.1:{port}/v1")
+  }
+
   /// Regression: `AgentLoop::run` dispatched the full namespaced tool name
   /// (`probe--record`) into the toolset's `handle`, whose arms match bare
   /// tool names only — every tool call came back "Error: unknown tool".
@@ -867,12 +964,13 @@ mod network_tests {
 
     let probe = Probe::default();
     let recorded = probe.recorded.clone();
-    let mut agent_loop = AgentLoop::new(ModelConfig::OpenAi {
+    let model = OpenAiCompatibleConfig {
       base_url,
       api_key: String::new(),
       model: "test".to_string(),
-    })
-    .with_toolsets([Toolset::Immutable(Box::new(probe))].into_iter());
+    };
+    let mut agent_loop =
+      AgentLoop::default().with_toolsets([Toolset::Immutable(Box::new(probe))].into_iter());
 
     let mut conversation = Conversation::default();
     conversation.push(ConversationMessage::user("record hello".to_string()));
@@ -880,7 +978,7 @@ mod network_tests {
     let drainer = tokio::spawn(async move { while rx.recv().await.is_some() {} });
 
     agent_loop
-      .run(ContextProvider::owned(()), &mut conversation, tx)
+      .run(&model, ContextProvider::owned(()), &mut conversation, tx)
       .await
       .unwrap();
     drainer.abort();
@@ -939,13 +1037,14 @@ mod network_tests {
 
     let probe = Probe::default();
     let recorded = probe.recorded.clone();
-    let mut agent_loop = AgentLoop::new(ModelConfig::OpenAi {
+    let model = OpenAiCompatibleConfig {
       base_url,
       api_key: String::new(),
       model: "test".to_string(),
-    })
-    .with_toolsets([Toolset::Immutable(Box::new(probe))].into_iter())
-    .with_hide_tool_history(true);
+    };
+    let mut agent_loop = AgentLoop::default()
+      .with_toolsets([Toolset::Immutable(Box::new(probe))].into_iter())
+      .with_hide_tool_history(true);
 
     // Seed the conversation with a previous round of tool traffic that
     // must never reach the prompt.
@@ -973,7 +1072,7 @@ mod network_tests {
     let drainer = tokio::spawn(async move { while rx.recv().await.is_some() {} });
 
     agent_loop
-      .run(ContextProvider::owned(()), &mut conversation, tx)
+      .run(&model, ContextProvider::owned(()), &mut conversation, tx)
       .await
       .unwrap();
     drainer.abort();
@@ -1030,6 +1129,51 @@ mod network_tests {
     assert!(req2.contains("t2"));
     assert!(req2.contains("two"));
   }
+
+  /// A 401 response triggers one `OpenAiCompatible::refresh_auth` and the
+  /// request is re-issued with the refreshed token.
+  #[tokio::test]
+  async fn prompt_retries_with_refreshed_token_on_401() {
+    let sse_body = concat!(
+      "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":null}]}\n\n",
+      "data: [DONE]\n\n",
+    );
+    let responses = vec![
+      "HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_string(),
+      format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        sse_body.len(),
+        sse_body,
+      ),
+    ];
+    let recorded: Arc<Mutex<Vec<Option<String>>>> = Arc::new(Mutex::new(Vec::new()));
+    let base_url = serve_responses_recording_auth(responses, Some(recorded.clone())).await;
+
+    let model = RefreshableModel {
+      base_url,
+      model: "test".to_string(),
+      refreshed: std::sync::atomic::AtomicBool::new(false),
+    };
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+    let drainer = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    let (message, _) = prompt(&model, &[], vec![], None, tx).await.unwrap();
+    drainer.abort();
+
+    let ConversationMessage::Assistant { content, .. } = message else {
+      panic!("expected an assistant message");
+    };
+    assert_eq!(content, "ok");
+
+    // The initial request carries the stale token; the retry the fresh one.
+    assert_eq!(
+      recorded.lock().unwrap().as_slice(),
+      [
+        Some("Bearer stale".to_string()),
+        Some("Bearer fresh".to_string()),
+      ],
+    );
+  }
 }
 
 /// Wasm-only tests: drive the browser-fetch transport directly. Run with
@@ -1037,13 +1181,19 @@ mod network_tests {
 #[cfg(all(test, target_arch = "wasm32"))]
 mod wasm_tests {
   use super::*;
+  use crate::OpenAiCompatibleConfig;
   use wasm_bindgen_test::wasm_bindgen_test;
 
   /// The wasm cfg path issues the request through browser `fetch`; an
   /// unreachable endpoint must surface as a transport error, not panic.
   #[wasm_bindgen_test]
   async fn fetch_stream_errors_on_unreachable_endpoint() {
-    let result = fetch_stream("http://127.0.0.1:1/v1/chat/completions", "", "{}").await;
+    let model = OpenAiCompatibleConfig {
+      base_url: "http://127.0.0.1:1/v1".to_string(),
+      api_key: String::new(),
+      model: "test".to_string(),
+    };
+    let result = fetch_stream("http://127.0.0.1:1/v1/chat/completions", &model, "{}").await;
     assert!(result.is_err());
   }
 }
